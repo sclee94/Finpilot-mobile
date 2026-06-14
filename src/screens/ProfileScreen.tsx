@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { authStorage } from '../utils/auth';
+import { getUser } from '../api/userApi';
 import { colors } from '../constants/colors';
 import type { User } from '../types';
 
@@ -21,7 +22,17 @@ export default function ProfileScreen({ navigation }: any) {
   const [user, setUser] = useState<User | null>(null);
 
   useFocusEffect(useCallback(() => {
-    authStorage.get().then(setUser);
+    authStorage.get().then(async (stored) => {
+      if (!stored) return;
+      setUser(stored);
+      try {
+        const res = await getUser({ userUid: stored.userUid });
+        if (res.status === 200 && res.data) {
+          setUser(res.data);
+          await authStorage.save(res.data);
+        }
+      } catch {}
+    });
   }, []));
 
   const handleLogout = () => {
@@ -48,6 +59,9 @@ export default function ProfileScreen({ navigation }: any) {
     user?.status === 1  ? colors.emerald :
     user?.status === 0  ? colors.textDim : colors.rose;
 
+  const hasLiveKis  = !!(user?.kisAppKey && user?.kisAppSecret && user?.kisAccountNo && user?.kisAccountProduct);
+  const hasPaperKis = !!(user?.kisPaperAppKey && user?.kisPaperAppSecret && user?.kisPaperAccountNo && user?.kisPaperAccountProduct);
+
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
       {/* 프로필 헤더 */}
@@ -67,8 +81,8 @@ export default function ProfileScreen({ navigation }: any) {
       {/* 계정 정보 */}
       <Text style={styles.sectionTitle}>계정 정보</Text>
       <View style={styles.section}>
-        <InfoRow label="이름"   value={user?.userName ?? '—'} />
-        <InfoRow label="이메일" value={user?.email    ?? '—'} />
+        <InfoRow label="이름"     value={user?.userName  ?? '—'} />
+        <InfoRow label="이메일"   value={user?.email     ?? '—'} />
         <InfoRow label="전화번호" value={user?.userPhone ?? '—'} />
         <View style={styles.row}>
           <Text style={styles.rowLabel}>계정 상태</Text>
@@ -77,6 +91,27 @@ export default function ProfileScreen({ navigation }: any) {
         <View style={[styles.row, { borderBottomWidth: 0 }]}>
           <Text style={styles.rowLabel}>권한</Text>
           <Text style={[styles.rowValue, { color: colors.teal }]}>{permLabel}</Text>
+        </View>
+      </View>
+
+      {/* KIS 연동 */}
+      <Text style={styles.sectionTitle}>KIS 연동</Text>
+      <View style={styles.section}>
+        <View style={styles.row}>
+          <Text style={styles.rowLabel}>실전 계좌</Text>
+          <View style={[styles.kisBadge, { backgroundColor: hasLiveKis ? colors.amberDim : colors.surfaceAlt }]}>
+            <Text style={[styles.kisBadgeText, { color: hasLiveKis ? colors.amber : colors.textDim }]}>
+              {hasLiveKis ? `연동완료 · ${user!.kisAccountNo}` : '미설정'}
+            </Text>
+          </View>
+        </View>
+        <View style={[styles.row, { borderBottomWidth: 0 }]}>
+          <Text style={styles.rowLabel}>모의 계좌</Text>
+          <View style={[styles.kisBadge, { backgroundColor: hasPaperKis ? colors.blueDim : colors.surfaceAlt }]}>
+            <Text style={[styles.kisBadgeText, { color: hasPaperKis ? colors.blue : colors.textDim }]}>
+              {hasPaperKis ? `연동완료 · ${user!.kisPaperAccountNo}` : '미설정'}
+            </Text>
+          </View>
         </View>
       </View>
 
@@ -122,6 +157,10 @@ const styles = StyleSheet.create({
   },
   rowLabel:    { fontSize: 14, color: colors.textDim },
   rowValue:    { fontSize: 14, fontWeight: '600', color: colors.text },
+  kisBadge:    {
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8,
+  },
+  kisBadgeText:{ fontSize: 12, fontWeight: '600' },
   logoutBtn:   {
     backgroundColor: colors.roseDim, borderWidth: 1, borderColor: colors.rose,
     borderRadius: 14, paddingVertical: 15, alignItems: 'center',

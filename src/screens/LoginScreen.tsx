@@ -1,17 +1,34 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, KeyboardAvoidingView, Platform,
   ActivityIndicator, Alert, ScrollView, Image,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { login } from '../api/authApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
+import { registerForPushNotificationsAsync } from '../utils/notifications';
+
+const CRED_KEY = '@finpilot/saved_credentials';
 
 export default function LoginScreen({ navigation }: any) {
-  const [email,    setEmail]    = useState('');
-  const [password, setPassword] = useState('');
-  const [loading,  setLoading]  = useState(false);
+  const [email,      setEmail]      = useState('');
+  const [password,   setPassword]   = useState('');
+  const [loading,    setLoading]    = useState(false);
+  const [saveCredentials, setSaveCredentials] = useState(false);
+
+  useEffect(() => {
+    AsyncStorage.getItem(CRED_KEY).then(raw => {
+      if (!raw) return;
+      try {
+        const { email: e, password: p } = JSON.parse(raw);
+        setEmail(e ?? '');
+        setPassword(p ?? '');
+        setSaveCredentials(true);
+      } catch {}
+    });
+  }, []);
 
   const handleLogin = async () => {
     if (!email || !password) {
@@ -22,7 +39,13 @@ export default function LoginScreen({ navigation }: any) {
     try {
       const res = await login(email, password);
       if (res.status === 200 && res.data) {
+        if (saveCredentials) {
+          await AsyncStorage.setItem(CRED_KEY, JSON.stringify({ email, password }));
+        } else {
+          await AsyncStorage.removeItem(CRED_KEY);
+        }
         await authStorage.save(res.data);
+        registerForPushNotificationsAsync();
         navigation.replace('Main');
       } else {
         Alert.alert('로그인 실패', res.message || '이메일 또는 비밀번호를 확인해주세요.');
@@ -81,6 +104,17 @@ export default function LoginScreen({ navigation }: any) {
           </View>
 
           <TouchableOpacity
+            style={styles.checkRow}
+            onPress={() => setSaveCredentials(v => !v)}
+            activeOpacity={0.7}
+          >
+            <View style={[styles.checkbox, saveCredentials && styles.checkboxOn]}>
+              {saveCredentials && <Text style={styles.checkmark}>✓</Text>}
+            </View>
+            <Text style={styles.checkLabel}>아이디 · 비밀번호 저장</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             style={[styles.button, loading && styles.buttonDisabled]}
             onPress={handleLogin}
             disabled={loading}
@@ -116,6 +150,15 @@ const styles = StyleSheet.create({
     borderRadius: 12, paddingHorizontal: 16, paddingVertical: 14,
     fontSize: 15, color: colors.text,
   },
+  checkRow:    { flexDirection: 'row', alignItems: 'center', marginBottom: 20, marginTop: 4 },
+  checkbox:    {
+    width: 20, height: 20, borderRadius: 6, borderWidth: 1.5,
+    borderColor: colors.borderDim, backgroundColor: colors.bg,
+    alignItems: 'center', justifyContent: 'center', marginRight: 10,
+  },
+  checkboxOn:  { backgroundColor: colors.teal, borderColor: colors.teal },
+  checkmark:   { fontSize: 12, color: colors.bg, fontWeight: '700' },
+  checkLabel:  { fontSize: 13, color: colors.textDim },
   button:      {
     backgroundColor: colors.teal, borderRadius: 12,
     paddingVertical: 15, alignItems: 'center', marginTop: 8,

@@ -1,66 +1,92 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
   RefreshControl, TouchableOpacity, ActivityIndicator,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getTradingSessionList, getExecuteOnOff, setExecuteOnOff } from '../api/tradeApi';
+import { getTradingSessionList, getExecuteOnOff, setExecuteOnOff, getBalance } from '../api/tradeApi';
 import { authStorage } from '../utils/auth';
+import { assetStorage } from '../utils/assetStorage';
 import { colors } from '../constants/colors';
 import type { User, TradingSession } from '../types';
 
-function StatCard({ label, value, color, bg }: { label: string; value: string; color: string; bg: string }) {
-  return (
-    <View style={[styles.statCard, { backgroundColor: bg, borderColor: bg }]}>
-      <Text style={[styles.statValue, { color }]}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
+function fmt(v: number | null): string {
+  if (v === null) return '-';
+  const a = Math.abs(v);
+  if (a >= 100_000_000) return `${(v / 100_000_000).toFixed(1)}억`;
+  if (a >= 10_000)      return `${Math.round(v / 10_000)}만원`;
+  return `${v.toLocaleString()}원`;
 }
 
-function SessionCard({ session }: { session: TradingSession }) {
-  const isActive = session.active === 1;
-  const posColor =
-    session.currentPosition === 'LONG'  ? colors.teal :
-    session.currentPosition === 'SHORT' ? colors.rose : colors.textDim;
-  const posLabel =
-    session.currentPosition === 'LONG'  ? '롱 포지션' :
-    session.currentPosition === 'SHORT' ? '숏 포지션' : '포지션 없음';
-
+function AssetTable({ liveBalance, liveHolding, liveOrderableCash, paperBalance, paperHolding, paperOrderableCash }: {
+  liveBalance: number | null; liveHolding: number | null; liveOrderableCash: number | null;
+  paperBalance: number | null; paperHolding: number | null; paperOrderableCash: number | null;
+}) {
+  const rows = [
+    { label: '총 자산',           liveVal: liveBalance,       paperVal: paperBalance,       color: colors.text },
+    { label: '보유 주식 평가금액', liveVal: liveHolding,       paperVal: paperHolding,       color: colors.teal },
+    { label: '매수 가능 자산',     liveVal: liveOrderableCash, paperVal: paperOrderableCash, color: colors.emerald },
+  ];
   return (
-    <View style={styles.sessionCard}>
-      <View style={styles.sessionHeader}>
-        <View style={styles.sessionLeft}>
-          <Text style={styles.sessionSymbol}>{session.symbol}</Text>
-          <View style={[styles.modeBadge, session.mode === 'LIVE' ? styles.modeLive : styles.modePaper]}>
-            <Text style={[styles.modeBadgeText, session.mode === 'LIVE' ? styles.modeLiveText : styles.modePaperText]}>
-              {session.mode === 'LIVE' ? '실전' : '모의'}
-            </Text>
-          </View>
+    <View style={styles.statsTable}>
+      <View style={styles.statsHeaderRow}>
+        <Text style={styles.statsHeaderLabel} />
+        <Text style={[styles.assetHeaderCol, { color: colors.amber }]}>실전</Text>
+        <Text style={[styles.assetHeaderCol, { color: colors.blue }]}>모의</Text>
+      </View>
+      {rows.map((row, i) => (
+        <View key={i} style={[styles.statsRow, i % 2 === 1 && styles.statsRowAlt]}>
+          <Text style={styles.statsRowLabel}>{row.label}</Text>
+          <Text style={[styles.assetVal, { color: row.color }]}>{fmt(row.liveVal)}</Text>
+          <Text style={[styles.assetVal, { color: row.color }]}>{fmt(row.paperVal)}</Text>
         </View>
-        <View style={[styles.activeDot, { backgroundColor: isActive ? colors.emerald : colors.textDim }]} />
-      </View>
-
-      <View style={styles.sessionRow}>
-        <Text style={[styles.positionText, { color: posColor }]}>{posLabel}</Text>
-        <Text style={styles.sessionSub}>
-          {session.strategyConfig?.title ?? `전략 #${session.strategyConfigId}`}
-        </Text>
-      </View>
-
-      {session.currentEquity != null && (
-        <Text style={styles.equityText}>
-          자본금 {session.currentEquity.toLocaleString()}
-        </Text>
-      )}
+      ))}
     </View>
   );
 }
+
+function StatsTable({ live, paper }: {
+  live:  { total: number; active: number; stopped: number; long: number; short: number; waiting: number };
+  paper: { total: number; active: number; stopped: number; long: number; short: number; waiting: number };
+}) {
+  const rows: { label: string; liveVal: number; paperVal: number; color: string }[] = [
+    { label: '전체 세션',  liveVal: live.total,   paperVal: paper.total,   color: colors.text },
+    { label: '실행 중',    liveVal: live.active,  paperVal: paper.active,  color: colors.emerald },
+    { label: '중지됨',     liveVal: live.stopped, paperVal: paper.stopped, color: colors.textDim },
+    { label: '롱 포지션',  liveVal: live.long,    paperVal: paper.long,    color: colors.teal },
+    { label: '숏 포지션',  liveVal: live.short,   paperVal: paper.short,   color: colors.rose },
+    { label: '대기 중',    liveVal: live.waiting, paperVal: paper.waiting, color: colors.amber },
+  ];
+  return (
+    <View style={styles.statsTable}>
+      {/* 헤더 */}
+      <View style={styles.statsHeaderRow}>
+        <Text style={styles.statsHeaderLabel} />
+        <Text style={[styles.statsHeaderCol, { color: colors.amber }]}>실전</Text>
+        <Text style={[styles.statsHeaderCol, { color: colors.blue }]}>모의</Text>
+      </View>
+      {rows.map((row, i) => (
+        <View key={i} style={[styles.statsRow, i % 2 === 1 && styles.statsRowAlt]}>
+          <Text style={styles.statsRowLabel}>{row.label}</Text>
+          <Text style={[styles.statsRowVal, { color: row.color }]}>{row.liveVal}</Text>
+          <Text style={[styles.statsRowVal, { color: row.color }]}>{row.paperVal}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
 
 export default function HomeScreen() {
   const [user,       setUser]       = useState<User | null>(null);
   const [sessions,   setSessions]   = useState<TradingSession[]>([]);
-  const [execOn,     setExecOn]     = useState<boolean>(false);
+  const [execOn,       setExecOn]       = useState<boolean>(false);
+  const [liveBalance,        setLiveBalance]        = useState<number | null>(null);
+  const [liveHolding,        setLiveHolding]        = useState<number | null>(null);
+  const [liveOrderableCash,  setLiveOrderableCash]  = useState<number | null>(null);
+  const [paperBalance,       setPaperBalance]       = useState<number | null>(null);
+  const [paperHolding,       setPaperHolding]       = useState<number | null>(null);
+  const [paperOrderableCash, setPaperOrderableCash] = useState<number | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -68,21 +94,82 @@ export default function HomeScreen() {
     if (showLoader) setLoading(true);
     const u = await authStorage.get();
     setUser(u);
-    const isAdmin = (u?.permission ?? 0) >= 99;
+    const isAdmin   = (u?.permission ?? 0) >= 99;
+    const userParam = isAdmin ? {} : { userUid: u?.userUid };
     try {
       const [sessionRes, execRes] = await Promise.all([
-        getTradingSessionList(isAdmin ? {} : { userUid: u?.userUid }),
+        getTradingSessionList(userParam),
         getExecuteOnOff(),
       ]);
       if (sessionRes.status === 200) setSessions(sessionRes.data ?? []);
-      if (execRes.status === 200)    setExecOn(execRes.data?.isEnabled === 1);
+      if (execRes.status    === 200) setExecOn(execRes.data?.isEnabled === 1);
+
+      // 자산은 로컬 DB에서 불러옴 (새로고침 전이면 null 유지 → '-' 표시)
+      const uid = u?.userUid ?? '';
+      if (uid) {
+        const cached = await assetStorage.get(uid);
+        if (cached) {
+          setLiveBalance(cached.liveBalance);
+          setLiveHolding(cached.liveHolding);
+          setLiveOrderableCash(cached.liveOrderableCash);
+          setPaperBalance(cached.paperBalance);
+          setPaperHolding(cached.paperHolding);
+          setPaperOrderableCash(cached.paperOrderableCash);
+        }
+      }
     } catch {}
     finally { setLoading(false); setRefreshing(false); }
   };
 
   useFocusEffect(useCallback(() => { load(); }, []));
 
-  const onRefresh = () => { setRefreshing(true); load(false); };
+  const onRefresh = async () => {
+    setRefreshing(true);
+    const u = await authStorage.get();
+    const uid = u?.userUid ?? '';
+    const isAdmin   = (u?.permission ?? 0) >= 99;
+    const userParam = isAdmin ? {} : { userUid: u?.userUid };
+    try {
+      const balanceParams: Parameters<typeof getBalance>[] = uid
+        ? [
+            [uid, 'LIVE',  u?.kisAccountNo      ?? undefined],
+            [uid, 'PAPER', u?.kisPaperAccountNo ?? undefined],
+          ]
+        : [];
+      const calls: Promise<any>[] = [
+        getTradingSessionList(userParam),
+        getExecuteOnOff(),
+        ...balanceParams.map(p => getBalance(...p)),
+      ];
+      const [sessionRes, execRes, liveBalRes, paperBalRes] = await Promise.all(calls);
+      if (sessionRes.status === 200) setSessions(sessionRes.data ?? []);
+      if (execRes.status    === 200) setExecOn(execRes.data?.isEnabled === 1);
+
+      // KIS API로 자산 조회 후 로컬 DB에 저장
+      if (uid && balanceParams.length > 0) {
+        const existing  = (await assetStorage.get(uid)) ?? {};
+        const liveData  = liveBalRes?.status  === 200 ? liveBalRes.data  : null;
+        const paperData = paperBalRes?.status === 200 ? paperBalRes.data : null;
+        const newLiveBalance        = liveData?.totalBalance    ?? existing.liveBalance        ?? null;
+        const newLiveHolding        = liveData?.holdingBalance  ?? existing.liveHolding        ?? null;
+        const newLiveOrderableCash  = liveData?.orderableCash   ?? existing.liveOrderableCash  ?? null;
+        const newPaperBalance       = paperData?.totalBalance   ?? existing.paperBalance       ?? null;
+        const newPaperHolding       = paperData?.holdingBalance ?? existing.paperHolding       ?? null;
+        const newPaperOrderableCash = paperData?.orderableCash  ?? existing.paperOrderableCash ?? null;
+        setLiveBalance(newLiveBalance);
+        setLiveHolding(newLiveHolding);
+        setLiveOrderableCash(newLiveOrderableCash);
+        setPaperBalance(newPaperBalance);
+        setPaperHolding(newPaperHolding);
+        setPaperOrderableCash(newPaperOrderableCash);
+        await assetStorage.save(uid, {
+          liveBalance: newLiveBalance, liveHolding: newLiveHolding, liveOrderableCash: newLiveOrderableCash,
+          paperBalance: newPaperBalance, paperHolding: newPaperHolding, paperOrderableCash: newPaperOrderableCash,
+        });
+      }
+    } catch {}
+    finally { setRefreshing(false); }
+  };
 
   const toggleExec = async () => {
     const next = execOn ? 0 : 1;
@@ -90,10 +177,21 @@ export default function HomeScreen() {
     setExecOn(!execOn);
   };
 
-  const active   = sessions.filter(s => s.active === 1).length;
-  const stopped  = sessions.filter(s => s.active === 0).length;
-  const longPos  = sessions.filter(s => s.currentPosition === 'LONG').length;
-  const shortPos = sessions.filter(s => s.currentPosition === 'SHORT').length;
+  const myUid         = user?.userUid;
+  const liveSessions  = sessions.filter(s => s.mode === 'LIVE'  && (!myUid || s.userUid === myUid));
+  const paperSessions = sessions.filter(s => s.mode !== 'LIVE'  && (!myUid || s.userUid === myUid));
+
+  const calcStats = (list: TradingSession[]) => ({
+    total:   list.length,
+    active:  list.filter(s => s.active === 1).length,
+    stopped: list.filter(s => s.active === 0).length,
+    long:    list.filter(s => s.currentPosition === 'LONG').length,
+    short:   list.filter(s => s.currentPosition === 'SHORT').length,
+    waiting: list.filter(s => s.currentPosition === 'NONE' && s.active === 1).length,
+  });
+
+  const liveStats  = calcStats(liveSessions);
+  const paperStats = calcStats(paperSessions);
 
   if (loading) return (
     <View style={styles.center}>
@@ -124,33 +222,18 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* 통계 카드 */}
-      <View style={styles.statsGrid}>
-        <StatCard label="전체 세션"  value={`${sessions.length}`} color={colors.text}    bg={colors.surfaceAlt} />
-        <StatCard label="실행 중"    value={`${active}`}          color={colors.emerald} bg={colors.emeraldDim} />
-        <StatCard label="중지됨"     value={`${stopped}`}         color={colors.textDim} bg={colors.surfaceAlt} />
-        <StatCard label="롱 포지션"  value={`${longPos}`}         color={colors.teal}    bg={colors.tealDim} />
-        <StatCard label="숏 포지션"  value={`${shortPos}`}        color={colors.rose}    bg={colors.roseDim} />
-        <StatCard label="대기 중"    value={`${sessions.filter(s => s.currentPosition === 'NONE' && s.active === 1).length}`}
-                                                                   color={colors.amber}   bg={colors.amberDim} />
-      </View>
+      {/* 자산 현황 */}
+      <AssetTable
+        liveBalance={liveBalance}
+        liveHolding={liveHolding}
+        liveOrderableCash={liveOrderableCash}
+        paperBalance={paperBalance}
+        paperHolding={paperHolding}
+        paperOrderableCash={paperOrderableCash}
+      />
 
-      {/* 세션 목록 */}
-      <Text style={styles.sectionTitle}>활성 세션</Text>
-      {sessions.filter(s => s.active === 1).length === 0 ? (
-        <View style={styles.emptyCard}>
-          <Text style={styles.emptyText}>활성 세션이 없습니다</Text>
-        </View>
-      ) : (
-        sessions.filter(s => s.active === 1).map(s => <SessionCard key={s.id} session={s} />)
-      )}
-
-      {stopped > 0 && (
-        <>
-          <Text style={[styles.sectionTitle, { marginTop: 8 }]}>중지된 세션</Text>
-          {sessions.filter(s => s.active === 0).map(s => <SessionCard key={s.id} session={s} />)}
-        </>
-      )}
+      {/* 통계 테이블 */}
+      <StatsTable live={liveStats} paper={paperStats} />
     </ScrollView>
   );
 }
@@ -168,36 +251,23 @@ const styles = StyleSheet.create({
   execButtonText: { fontSize: 13, fontWeight: '700' },
   execOnText:     { color: colors.emerald },
   execOffText:    { color: colors.textDim },
-  statsGrid:      { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 24 },
-  statCard:       {
-    width: '30.5%', borderRadius: 14, padding: 14,
-    borderWidth: 1, alignItems: 'center',
-  },
-  statValue:      { fontSize: 22, fontWeight: '800' },
-  statLabel:      { fontSize: 11, color: colors.textDim, marginTop: 4 },
-  sectionTitle:   { fontSize: 15, fontWeight: '700', color: colors.text, marginBottom: 10 },
-  sessionCard:    {
+  statsTable:     {
     backgroundColor: colors.surface, borderRadius: 16,
     borderWidth: 1, borderColor: colors.borderDim,
-    padding: 16, marginBottom: 10,
+    marginBottom: 24, overflow: 'hidden',
   },
-  sessionHeader:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  sessionLeft:    { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  sessionSymbol:  { fontSize: 16, fontWeight: '700', color: colors.text },
-  modeBadge:      { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 8, borderWidth: 1 },
-  modeLive:       { backgroundColor: colors.amberDim, borderColor: colors.amber },
-  modePaper:      { backgroundColor: colors.blueDim,  borderColor: colors.blue },
-  modeBadgeText:  { fontSize: 11, fontWeight: '700' },
-  modeLiveText:   { color: colors.amber },
-  modePaperText:  { color: colors.blue },
-  activeDot:      { width: 10, height: 10, borderRadius: 5 },
-  sessionRow:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  positionText:   { fontSize: 13, fontWeight: '600' },
-  sessionSub:     { fontSize: 12, color: colors.textDim },
-  equityText:     { fontSize: 12, color: colors.textDim, marginTop: 8 },
-  emptyCard:      {
-    backgroundColor: colors.surface, borderRadius: 16, padding: 24,
-    alignItems: 'center', borderWidth: 1, borderColor: colors.borderDim,
+  statsHeaderRow: {
+    flexDirection: 'row', paddingHorizontal: 14, paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: colors.borderDim,
+    backgroundColor: colors.surfaceAlt,
   },
-  emptyText:      { color: colors.textDim, fontSize: 14 },
+  statsHeaderLabel: { flex: 1, fontSize: 12 },
+  statsHeaderCol:   { width: 56, textAlign: 'center', fontSize: 13, fontWeight: '700' },
+  statsRow:       { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14, paddingVertical: 11 },
+  statsRowAlt:    { backgroundColor: colors.surfaceAlt },
+  statsRowLabel:  { flex: 1, fontSize: 13, color: colors.textDim },
+  statsRowVal:    { width: 56, textAlign: 'center', fontSize: 16, fontWeight: '700' },
+  assetHeaderCol: { width: 72, textAlign: 'right', fontSize: 13, fontWeight: '700' },
+  assetVal:       { width: 72, textAlign: 'right', fontSize: 13, fontWeight: '700' },
 });
+

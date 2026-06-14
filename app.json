@@ -2,6 +2,7 @@
   "expo": {
     "name": "finpilot-mobile",
     "slug": "finpilot-mobile",
+    "owner": "seungchanlee",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/finpilot-logo.png",
@@ -10,7 +11,7 @@
     "splash": {
       "image": "./assets/finpilot-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#09090b"
     },
     "ios": {
       "supportsTablet": true
@@ -18,16 +19,26 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/finpilot-logo.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#09090b"
       },
-      "edgeToEdgeEnabled": true,
+      "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,
-      "package": "com.seungchanlee.finpilotmobile",
-      "usesCleartextTraffic": true
+      "package": "com.sclee.finpilot",
+      "usesCleartextTraffic": true,
+      "googleServicesFile": "./google-services.json"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "plugins": [
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/finpilot-logo.png",
+          "color": "#09090b"
+        }
+      ]
+    ],
     "extra": {
       "eas": {
         "projectId": "9c3f5507-378c-4b63-b7e6-ccaf79b3bef4"
