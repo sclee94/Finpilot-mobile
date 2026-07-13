@@ -10,32 +10,18 @@ export const getBacktest = (id: number, userUid: string) =>
 export const deleteBacktest = (id: number, userUid: string) =>
   apiClient.delete<ApiResponse<BacktestResult>>('/backtest/deleteBacktest', { id, userUid });
 
+/** 백테스트 실행 — 실전투자와 동일한 전략 로직으로 선택한 종목/전략을 검증 */
 export const runBacktest = (params: {
   userUid: string;
-  id: number;
-  title: string;
   symbol: string;
-  adxThreshold?: number;
-  adxSidewaysFloor?: number;
-  adxPersist?: number;
-  diGapMin?: number;
-  rsiLongEntry?: number;
-  rsiLongFloor?: number;
-  rsiShortEntry?: number;
-  rsiOversoldEntry?: number;
-  maxAddCount?: number;
-  atrSlMult?: number;
-  atrTpMult?: number;
-  minHoldBars?: number;
-  slCooldownBars?: number;
-  consecSlLimit?: number;
-  maxDdStop?: number;
-  commission?: number;
-  slippage?: number;
-  riskPerTrade: number;
-  usePrevBarSignal?: boolean;
-  initialCapital: number;
-  indicatorWindow?: number;
-  tradingDaysPerYear?: number;
+  strategyConfigId: number;
 }) =>
   apiClient.post<ApiResponse<BacktestResult>>('/finpilot/backtest/run', params);
+
+/** 포트폴리오 백테스트 실행 — 유저의 트레이딩 세션 목록 전체를 실전/모의투자와 동일하게 동시 시뮬레이션 */
+export const runPortfolioBacktest = (params: {
+  userUid: string;
+  mode: 'LIVE' | 'PAPER';
+  activeOnly: boolean;
+}) =>
+  apiClient.post<ApiResponse<BacktestResult>>('/finpilot/backtest/portfolio/run', params);

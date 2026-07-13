@@ -11,8 +11,10 @@ import {
   deleteTradingSession,
   resetTradingSession,
   insertTradingSession,
-  toggleStrategyUpdate,
+  syncPosition,
+  adjustCapital,
 } from '../api/tradeApi';
+import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
 import { getSymbolName } from '../constants/symbolNames';
@@ -20,31 +22,32 @@ import type { TradingSession } from '../types';
 
 function SessionCard({
   session,
+  syncing,
   onToggle,
   onReset,
   onDelete,
-  onToggleStrategyUpdate,
+  onSync,
+  onAdjustCapital,
 }: {
   session: TradingSession;
+  syncing: boolean;
   onToggle: () => void;
   onReset: () => void;
   onDelete: () => void;
-  onToggleStrategyUpdate: () => void;
+  onSync: () => void;
+  onAdjustCapital: () => void;
 }) {
   const isActive = session.active === 1;
-  const posColor =
-    session.currentPosition === 'LONG'  ? colors.teal :
-    session.currentPosition === 'SHORT' ? colors.rose : colors.textDim;
-  const posLabel =
-    session.currentPosition === 'LONG'  ? '롱' :
-    session.currentPosition === 'SHORT' ? '숏' : 'NONE';
+  const posColor = session.currentPosition === 'LONG' ? colors.teal : colors.textDim;
+  const posLabel = session.currentPosition === 'LONG' ? '롱' : 'NONE';
+  const returnPct = session.currentEquity != null ? (session.currentEquity - 1) * 100 : null;
 
   return (
     <View style={[styles.card, (session.sharesHeld ?? 0) >= 1 && styles.cardHolding]}>
       <View style={styles.cardTop}>
         <View style={styles.topLeft}>
           <View style={[styles.activeDot, { backgroundColor: isActive ? colors.emerald : colors.textDim }]} />
-          <Text style={styles.symbol}>{getSymbolName(session.symbol)}</Text>
+          <Text style={styles.symbol}>{session.symbolName ?? getSymbolName(session.symbol)}</Text>
           <View style={[styles.modeBadge, session.mode === 'LIVE' ? styles.modeLive : styles.modePaper]}>
             <Text style={[styles.modeText, { color: session.mode === 'LIVE' ? colors.amber : colors.blue }]}>
               {session.mode === 'LIVE' ? '실전' : '모의'}
@@ -58,6 +61,20 @@ function SessionCard({
         </View>
       </View>
 
+      <View style={styles.strategyRow}>
+        {session.strategyConfig ? (
+          <View style={styles.strategyBadge}>
+            <Text style={styles.strategyText}>
+              {session.strategyConfig.name || `전략 #${session.strategyConfigId}`} · 익절 +{session.strategyConfig.takeProfitPct}% · 손절 -{session.strategyConfig.stopLossPct}%
+            </Text>
+          </View>
+        ) : (
+          <View style={[styles.strategyBadge, styles.strategyBadgeNone]}>
+            <Text style={[styles.strategyText, { color: colors.textDim }]}>전략 미지정</Text>
+          </View>
+        )}
+      </View>
+
       <View style={styles.cardMid}>
         <View style={styles.metaItem}>
           <Text style={styles.metaLabel}>포지션</Text>
@@ -68,51 +85,22 @@ function SessionCard({
           <Text style={styles.metaValue}>{session.sharesHeld ?? 0}주</Text>
         </View>
         <View style={styles.metaItem}>
-          <Text style={styles.metaLabel}>보유봉수</Text>
-          <Text style={styles.metaValue}>{session.barsHeld}봉</Text>
+          <Text style={styles.metaLabel}>평균진입가</Text>
+          <Text style={styles.metaValue}>
+            {session.avgEntryPrice != null ? session.avgEntryPrice.toLocaleString() : '—'}
+          </Text>
         </View>
         <View style={styles.metaItem}>
-          <Text style={styles.metaLabel}>자본금</Text>
-          <Text style={styles.metaValue}>
-            {session.currentEquity != null ? session.currentEquity.toLocaleString() : '—'}
+          <Text style={styles.metaLabel}>수익률</Text>
+          <Text style={[styles.metaValue, { color: returnPct != null && returnPct < 0 ? colors.rose : colors.teal }]}>
+            {returnPct != null ? `${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%` : '—'}
           </Text>
         </View>
       </View>
 
-      {(session.sharesHeld ?? 0) >= 1 && session.avgEntryPrice != null && (
-        <View style={styles.entryPriceRow}>
-          <Text style={styles.entryPriceLabel}>평균 진입가</Text>
-          <Text style={[styles.entryPriceValue, { color: posColor }]}>
-            {session.avgEntryPrice.toLocaleString()}원
-          </Text>
-        </View>
+      {session.userDTO?.userName && (
+        <Text style={styles.userText}>{session.userDTO.userName}</Text>
       )}
-
-      <View style={styles.cardStrategy}>
-        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          <Text style={styles.strategyText}>
-            {session.isStrategyUpdate === 1 ? '전략 메뉴판' : '4등급 고정'}
-          </Text>
-          <TouchableOpacity
-            style={[
-              styles.autoUpdateBadge,
-              session.isStrategyUpdate === 1 ? styles.autoUpdateOn : styles.autoUpdateOff,
-            ]}
-            onPress={onToggleStrategyUpdate}
-            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
-          >
-            <Text style={[
-              styles.autoUpdateText,
-              { color: session.isStrategyUpdate === 1 ? colors.teal : colors.textDim },
-            ]}>
-              메뉴판 {session.isStrategyUpdate === 1 ? 'ON' : 'OFF'}
-            </Text>
-          </TouchableOpacity>
-        </View>
-        {session.userDTO?.userName && (
-          <Text style={styles.userText}>{session.userDTO.userName}</Text>
-        )}
-      </View>
 
       <View style={styles.cardActions}>
         <TouchableOpacity
@@ -131,6 +119,14 @@ function SessionCard({
           <Text style={[styles.actionBtnText, { color: colors.rose }]}>삭제</Text>
         </TouchableOpacity>
       </View>
+      <View style={[styles.cardActions, { marginTop: 8 }]}>
+        <TouchableOpacity style={[styles.actionBtn, styles.actionBtnSync]} onPress={onSync} disabled={syncing} activeOpacity={0.7}>
+          <Text style={[styles.actionBtnText, { color: '#a855f7' }]}>{syncing ? '동기화 중…' : '동기화'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.actionBtn, styles.actionBtnCapital]} onPress={onAdjustCapital} activeOpacity={0.7}>
+          <Text style={[styles.actionBtnText, { color: colors.emerald }]}>자본금 조정</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
@@ -142,19 +138,16 @@ function CreateSessionModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (data: { symbol: string; mode: 'LIVE' | 'PAPER'; currentEquity: number }) => void;
+  onSubmit: (data: { symbol: string; mode: 'LIVE' | 'PAPER' }) => void;
 }) {
   const [symbol, setSymbol] = useState('');
   const [mode, setMode]     = useState<'LIVE' | 'PAPER'>('PAPER');
-  const [equity, setEquity] = useState('');
 
-  const reset = () => { setSymbol(''); setMode('PAPER'); setEquity(''); };
+  const reset = () => { setSymbol(''); setMode('PAPER'); };
 
   const handleSubmit = () => {
     if (!symbol.trim()) { Alert.alert('입력 오류', '종목 코드를 입력해주세요.'); return; }
-    const eq = parseFloat(equity);
-    if (isNaN(eq) || eq <= 0) { Alert.alert('입력 오류', '자본금을 입력해주세요.'); return; }
-    onSubmit({ symbol: symbol.trim().toUpperCase(), mode, currentEquity: eq });
+    onSubmit({ symbol: symbol.trim().toUpperCase(), mode });
     reset();
   };
 
@@ -177,7 +170,7 @@ function CreateSessionModal({
               style={modal.input}
               value={symbol}
               onChangeText={setSymbol}
-              placeholder="예: 005930.KS, AAPL, NQ=F"
+              placeholder="예: 005930"
               placeholderTextColor={colors.textDim}
               autoCapitalize="characters"
             />
@@ -203,22 +196,64 @@ function CreateSessionModal({
             </View>
           </View>
 
-          <View style={modal.field}>
-            <Text style={modal.label}>초기 자본금 (원)</Text>
-            <TextInput
-              style={modal.input}
-              value={equity}
-              onChangeText={setEquity}
-              placeholder="예: 10000000"
-              placeholderTextColor={colors.textDim}
-              keyboardType="numeric"
-            />
-          </View>
-
-          <Text style={modal.hint}>전략은 시장 상황에 따라 자동으로 적용됩니다.</Text>
+          <Text style={modal.hint}>투자금은 KIS 실계좌/모의계좌 잔고를 기준으로 자동 반영됩니다.</Text>
 
           <TouchableOpacity style={modal.submitBtn} onPress={handleSubmit} activeOpacity={0.8}>
             <Text style={modal.submitText}>세션 생성</Text>
+          </TouchableOpacity>
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
+function AdjustCapitalModal({
+  visible,
+  submitting,
+  onClose,
+  onSubmit,
+}: {
+  visible: boolean;
+  submitting: boolean;
+  onClose: () => void;
+  onSubmit: (amount: number) => void;
+}) {
+  const [amount, setAmount] = useState('');
+
+  const handleClose = () => { setAmount(''); onClose(); };
+  const handleSubmit = () => {
+    const n = parseFloat(amount);
+    if (isNaN(n) || n === 0) { Alert.alert('입력 오류', '올바른 금액을 입력해주세요.'); return; }
+    onSubmit(n);
+    setAmount('');
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
+      <View style={modal.container}>
+        <View style={modal.handle} />
+        <View style={modal.header}>
+          <Text style={modal.title}>자본금 조정</Text>
+          <TouchableOpacity onPress={handleClose} style={modal.closeBtn}>
+            <Text style={modal.closeText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        <ScrollView style={modal.scroll} keyboardShouldPersistTaps="handled">
+          <Text style={modal.hint}>입금은 양수, 출금은 음수로 입력하세요.{'\n'}보유 포지션과 지금까지의 수익 이력은 그대로 유지되고, 수익률 계산 기준점만 조정됩니다.</Text>
+          <View style={modal.field}>
+            <TextInput
+              style={modal.input}
+              value={amount}
+              onChangeText={setAmount}
+              placeholder="예: 5000000 (입금) / -2000000 (출금)"
+              placeholderTextColor={colors.textDim}
+              keyboardType="numbers-and-punctuation"
+            />
+          </View>
+          <TouchableOpacity style={modal.submitBtn} onPress={handleSubmit} disabled={submitting} activeOpacity={0.8}>
+            {submitting
+              ? <ActivityIndicator color={colors.bg} />
+              : <Text style={modal.submitText}>조정하기</Text>}
           </TouchableOpacity>
         </ScrollView>
       </View>
@@ -233,6 +268,9 @@ export default function SessionsScreen() {
   const [modeTab,    setModeTab]    = useState<'live' | 'paper'>('live');
   const [filter,     setFilter]     = useState<'all' | 'active' | 'stopped'>('all');
   const [showCreate, setShowCreate] = useState(false);
+  const [syncingId,  setSyncingId]  = useState<string | null>(null);
+  const [capitalTarget, setCapitalTarget] = useState<TradingSession | null>(null);
+  const [capitalSubmitting, setCapitalSubmitting] = useState(false);
 
   const load = async (showLoader = true) => {
     if (showLoader) setLoading(true);
@@ -265,7 +303,7 @@ export default function SessionsScreen() {
   };
 
   const handleReset = (session: TradingSession) => {
-    Alert.alert('세션 초기화', `${getSymbolName(session.symbol)} 세션을 초기화하시겠습니까?\n포지션 및 통계가 초기화됩니다.`, [
+    Alert.alert('세션 초기화', `${getSymbolName(session.symbol)} 세션을 초기화하시겠습니까?\n포지션 및 수익률 기준점이 초기화됩니다.`, [
       { text: '취소', style: 'cancel' },
       {
         text: '초기화', style: 'destructive',
@@ -277,31 +315,6 @@ export default function SessionsScreen() {
         },
       },
     ]);
-  };
-
-  const handleToggleStrategyUpdate = (session: TradingSession) => {
-    const next = session.isStrategyUpdate === 1 ? 'OFF' : 'ON';
-    Alert.alert(
-      '전략 메뉴판',
-      `${getSymbolName(session.symbol)} 세션의 전략 메뉴판을 ${next}으로 변경하시겠습니까?\n` +
-      (next === 'OFF' ? 'OFF 시 4등급 전략을 고정 사용합니다.' : 'ON 시 시장 등급에 따라 전략을 자동 배정합니다.'),
-      [
-        { text: '취소', style: 'cancel' },
-        {
-          text: '확인',
-          onPress: async () => {
-            try {
-              await toggleStrategyUpdate(session.id);
-              setSessions(prev => prev.map(s =>
-                s.id === session.id
-                  ? { ...s, isStrategyUpdate: s.isStrategyUpdate === 1 ? 0 : 1 }
-                  : s
-              ));
-            } catch { Alert.alert('오류', '요청에 실패했습니다.'); }
-          },
-        },
-      ],
-    );
   };
 
   const handleDelete = (session: TradingSession) => {
@@ -319,18 +332,38 @@ export default function SessionsScreen() {
     ]);
   };
 
-  const handleCreate = async (data: { symbol: string; mode: 'LIVE' | 'PAPER'; currentEquity: number }) => {
+  const handleSync = async (session: TradingSession) => {
+    setSyncingId(session.id);
+    try {
+      const res = await syncPosition(session.id);
+      if (res.data) setSessions(prev => prev.map(s => s.id === session.id ? res.data : s));
+    } catch { Alert.alert('오류', '실잔고 동기화에 실패했습니다.'); }
+    finally { setSyncingId(null); }
+  };
+
+  const handleAdjustCapital = async (amount: number) => {
+    if (!capitalTarget) return;
+    setCapitalSubmitting(true);
+    try {
+      const res = await adjustCapital(capitalTarget.id, amount);
+      if (res.data) setSessions(prev => prev.map(s => s.id === capitalTarget.id ? res.data : s));
+      setCapitalTarget(null);
+    } catch { Alert.alert('오류', '자본금 조정에 실패했습니다.'); }
+    finally { setCapitalSubmitting(false); }
+  };
+
+  const handleCreate = async (data: { symbol: string; mode: 'LIVE' | 'PAPER' }) => {
     const u = await authStorage.get();
     if (!u?.userUid) return;
     try {
+      const strategyRes = await getStrategyConfigList();
+      const strategyConfigId = strategyRes.data?.content?.[0]?.id ?? null;
+
       const res = await insertTradingSession({
         userUid: u.userUid,
         symbol: data.symbol,
         mode: data.mode,
-        cooldownBarsLeft: 0,
-        consecSlCount: 0,
-        currentEquity: data.currentEquity,
-        peakEquity: data.currentEquity,
+        strategyConfigId,
       });
       if (res.data) {
         setSessions(prev => [res.data, ...prev]);
@@ -400,10 +433,12 @@ export default function SessionsScreen() {
         renderItem={({ item }) => (
           <SessionCard
             session={item}
+            syncing={syncingId === item.id}
             onToggle={() => handleToggle(item)}
             onReset={() => handleReset(item)}
             onDelete={() => handleDelete(item)}
-            onToggleStrategyUpdate={() => handleToggleStrategyUpdate(item)}
+            onSync={() => handleSync(item)}
+            onAdjustCapital={() => setCapitalTarget(item)}
           />
         )}
         contentContainerStyle={styles.list}
@@ -426,6 +461,13 @@ export default function SessionsScreen() {
         visible={showCreate}
         onClose={() => setShowCreate(false)}
         onSubmit={handleCreate}
+      />
+
+      <AdjustCapitalModal
+        visible={capitalTarget != null}
+        submitting={capitalSubmitting}
+        onClose={() => setCapitalTarget(null)}
+        onSubmit={handleAdjustCapital}
       />
     </View>
   );
@@ -455,8 +497,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.borderDim, padding: 14, marginBottom: 10,
   },
   cardHolding:     { borderColor: '#a855f7', borderWidth: 1.5 },
-  cardTop:         { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+  cardTop:         { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   topLeft:         { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  strategyRow:     { flexDirection: 'row', marginBottom: 10 },
+  strategyBadge:   { backgroundColor: colors.tealDim, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  strategyBadgeNone: { backgroundColor: colors.surfaceAlt },
+  strategyText:    { fontSize: 11, fontWeight: '600', color: colors.teal },
   activeDot:       { width: 8, height: 8, borderRadius: 4 },
   symbol:          { fontSize: 16, fontWeight: '700', color: colors.text },
   modeBadge:       { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
@@ -472,26 +518,15 @@ const styles = StyleSheet.create({
   metaItem:        { flex: 1, alignItems: 'center' },
   metaLabel:       { fontSize: 10, color: colors.textDim, marginBottom: 4 },
   metaValue:       { fontSize: 13, fontWeight: '700', color: colors.text },
-  entryPriceRow:   {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: colors.bg, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7,
-    marginBottom: 10,
-  },
-  entryPriceLabel: { fontSize: 12, color: colors.textDim },
-  entryPriceValue: { fontSize: 13, fontWeight: '700' },
-  cardStrategy:       { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
-  strategyText:       { fontSize: 12, color: colors.textDim },
-  userText:           { fontSize: 12, color: colors.textDim },
-  autoUpdateBadge:    { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 1 },
-  autoUpdateOn:       { backgroundColor: colors.tealDim, borderColor: colors.teal },
-  autoUpdateOff:      { backgroundColor: colors.surfaceAlt, borderColor: colors.borderDim },
-  autoUpdateText:     { fontSize: 10, fontWeight: '700' as const },
+  userText:        { fontSize: 12, color: colors.textDim, marginBottom: 10 },
   cardActions:     { flexDirection: 'row', gap: 8 },
   actionBtn:       { flex: 1, paddingVertical: 7, borderRadius: 8, alignItems: 'center', borderWidth: 1 },
   actionBtnStart:  { backgroundColor: colors.emeraldDim, borderColor: colors.emerald },
   actionBtnStop:   { backgroundColor: colors.roseDim, borderColor: colors.rose },
   actionBtnReset:  { backgroundColor: colors.amberDim, borderColor: colors.amber },
   actionBtnDelete: { backgroundColor: colors.surfaceAlt, borderColor: colors.borderDim },
+  actionBtnSync:   { backgroundColor: 'rgba(168,85,247,0.15)', borderColor: '#a855f7' },
+  actionBtnCapital:{ backgroundColor: colors.emeraldDim, borderColor: colors.emerald },
   actionBtnText:   { fontSize: 12, fontWeight: '700' },
   empty:           { alignItems: 'center', paddingVertical: 60 },
   emptyText:       { color: colors.textDim, fontSize: 14 },
@@ -531,7 +566,7 @@ const modal = StyleSheet.create({
   modeBtnLive:      { backgroundColor: colors.amberDim, borderColor: colors.amber },
   modeBtnPaper:     { backgroundColor: colors.blueDim, borderColor: colors.blue },
   modeBtnText:      { fontSize: 14, fontWeight: '700', color: colors.textDim },
-  hint:             { fontSize: 12, color: colors.textDim, textAlign: 'center', marginBottom: 8 },
+  hint:             { fontSize: 12, color: colors.textDim, textAlign: 'center', marginBottom: 16 },
   submitBtn:        {
     backgroundColor: colors.teal, borderRadius: 12,
     paddingVertical: 15, alignItems: 'center', marginTop: 8, marginBottom: 32,

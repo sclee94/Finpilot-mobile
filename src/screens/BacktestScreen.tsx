@@ -4,12 +4,86 @@ import {
   RefreshControl, ActivityIndicator, Alert, Modal, ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getBacktestList, getBacktest, deleteBacktest, runBacktest } from '../api/backtestApi';
+import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolioBacktest } from '../api/backtestApi';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
-import { getSymbolName } from '../constants/symbolNames';
+import { getSymbolName, SYMBOL_NAMES } from '../constants/symbolNames';
 import type { BacktestResult, BacktestTrade, StrategyConfig } from '../types';
+
+const KOSPI_SYMBOL_OPTIONS = Object.entries(SYMBOL_NAMES)
+  .filter(([sym]) => sym.endsWith('.KS') || sym.endsWith('.KQ'))
+  .map(([value, label]) => ({ value, label }));
+
+const RESULT_LABELS: Record<string, string> = {
+  TP_THRESHOLD:    '즉시 익절',
+  SL_THRESHOLD:    '즉시 손절',
+  SCORE_TP:        '익절(스코어)',
+  SCORE_SL:        '손절(스코어)',
+  RSI_OVERBOUGHT:  '익절(RSI 과매수)',
+  EOD_FORCE_CLOSE: '강제청산',
+};
+
+function resultLabelOf(result: string): string {
+  return RESULT_LABELS[result] ?? result;
+}
+
+function resultColorOf(result: string): string {
+  if (result === 'TP_THRESHOLD' || result === 'SCORE_TP' || result === 'RSI_OVERBOUGHT') return colors.teal;
+  if (result === 'SL_THRESHOLD' || result === 'SCORE_SL') return colors.rose;
+  return colors.textDim;
+}
+
+// 포트폴리오(세션 목록) 백테스트 결과는 symbol 컬럼에 "PORTFOLIO(N종목)" 요약 라벨이 저장됨
+// — 개별 종목이 아니므로 getSymbolName()으로 풀어쓰지 않고 그대로 보여준다.
+function isPortfolioResult(symbol: string): boolean {
+  return symbol.startsWith('PORTFOLIO(');
+}
+
+function symbolLabelOf(symbol: string): string {
+  return isPortfolioResult(symbol) ? symbol : `${getSymbolName(symbol)} (${symbol})`;
+}
+
+function SymbolPickerModal({
+  visible, selected, onSelect, onClose,
+}: {
+  visible: boolean;
+  selected: string;
+  onSelect: (symbol: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <View style={detail.container}>
+        <View style={detail.handle} />
+        <View style={detail.header}>
+          <Text style={detail.title}>종목 선택</Text>
+          <TouchableOpacity onPress={onClose} style={detail.closeBtn}>
+            <Text style={detail.closeText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        <FlatList
+          data={KOSPI_SYMBOL_OPTIONS}
+          keyExtractor={item => item.value}
+          renderItem={({ item }) => {
+            const active = item.value === selected;
+            return (
+              <TouchableOpacity
+                style={[picker.row, active && picker.rowActive]}
+                onPress={() => { onSelect(item.value); onClose(); }}
+                activeOpacity={0.7}
+              >
+                <Text style={[picker.rowText, active && { color: colors.teal }]}>{item.label}</Text>
+                <Text style={picker.rowSymbol}>{item.value}</Text>
+              </TouchableOpacity>
+            );
+          }}
+          contentContainerStyle={{ padding: 12 }}
+        />
+      </View>
+    </Modal>
+  );
+}
 
 function BacktestDetailModal({
   result,
@@ -29,7 +103,7 @@ function BacktestDetailModal({
         <View style={detail.header}>
           <View style={{ flex: 1, marginRight: 12 }}>
             <Text style={detail.title}>
-              {getSymbolName(result.symbol)} ({result.symbol})
+              {symbolLabelOf(result.symbol)}
             </Text>
             <Text style={detail.subtitle}>{result.strategyTitle ?? '-'}</Text>
           </View>
@@ -78,18 +152,14 @@ function BacktestDetailModal({
                     t.direction === 'BUY' || t.direction === 'LONG' ? '매수' :
                     t.direction === 'SHORT' ? '매도' :
                     t.direction === 'ADD_LONG' ? '추가매수' : t.direction;
-                  const resultLabel =
-                    t.result === 'SL' ? 'SL 손절' :
-                    t.result === 'TP' ? 'TP 익절' : t.result;
+                  const resultLabel = resultLabelOf(t.result);
                   return (
                     <View key={t.id ?? t.tradeNo} style={detail.tradeRow}>
                       <View style={{ flex: 1 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                           <Text style={detail.tradeNo}>#{t.tradeNo}</Text>
                           <Text style={detail.tradeDir}>{dirLabel}</Text>
-                          <Text style={[detail.tradeResult, {
-                            color: t.result === 'SL' ? colors.rose : t.result === 'TP' ? colors.teal : colors.textDim,
-                          }]}>{resultLabel}</Text>
+                          <Text style={[detail.tradeResult, { color: resultColorOf(t.result) }]}>{resultLabel}</Text>
                         </View>
                         <Text style={detail.tradeTime}>{t.entryTime} → {t.exitTime}</Text>
                         <Text style={detail.tradePrice}>
@@ -115,13 +185,19 @@ const PAGE_SIZE = 15;
 
 export default function BacktestScreen() {
   const [results,         setResults]         = useState<BacktestResult[]>([]);
-  const [appliedStrategy, setAppliedStrategy] = useState<StrategyConfig | null>(null);
+  const [strategies,      setStrategies]      = useState<StrategyConfig[]>([]);
+  const [selectedStrategyId, setSelectedStrategyId] = useState<number | null>(null);
+  const [runSymbol,       setRunSymbol]       = useState('');
+  const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [loading,         setLoading]         = useState(true);
   const [refreshing,      setRefreshing]      = useState(false);
   const [selected,        setSelected]        = useState<BacktestResult | null>(null);
   const [detailLoading,   setDetailLoading]   = useState(false);
   const [running,         setRunning]         = useState(false);
   const [elapsed,         setElapsed]         = useState(0);
+  const [backtestType,     setBacktestType]     = useState<'SYMBOL' | 'PORTFOLIO'>('SYMBOL');
+  const [portfolioRunMode, setPortfolioRunMode] = useState<'LIVE' | 'PAPER'>('PAPER');
+  const [activeOnly,       setActiveOnly]       = useState(true);
   const [resultsPage,     setResultsPage]     = useState(1);
   const [resultsHasNext,  setResultsHasNext]  = useState(false);
   const [loadingMore,     setLoadingMore]     = useState(false);
@@ -136,7 +212,7 @@ export default function BacktestScreen() {
     try {
       const [resultsRes, stratRes] = await Promise.all([
         getBacktestList({ ...(isAdmin ? adminParams : userParams), page: 1, size: PAGE_SIZE }),
-        getStrategyConfigList(isAdmin ? adminParams : userParams),
+        getStrategyConfigList({ userUid: u?.userUid }),
       ]);
       if (resultsRes.status === 200) {
         setResults(resultsRes.data?.content ?? []);
@@ -144,7 +220,9 @@ export default function BacktestScreen() {
         setResultsPage(1);
       }
       if (stratRes.status === 200) {
-        setAppliedStrategy((stratRes.data?.content ?? []).find(s => s.isUse === 1) ?? null);
+        const list = stratRes.data?.content ?? [];
+        setStrategies(list);
+        setSelectedStrategyId(prev => (prev != null && list.some(s => s.id === prev)) ? prev : (list[0]?.id ?? null));
       }
     } catch {}
     finally { setLoading(false); setRefreshing(false); }
@@ -175,41 +253,43 @@ export default function BacktestScreen() {
   }, []));
 
   const handleRun = async () => {
-    if (!appliedStrategy || running) return;
+    if (!runSymbol || !selectedStrategyId || running) return;
     const u = await authStorage.get();
     if (!u?.userUid) return;
     setRunning(true);
     setElapsed(0);
     timerRef.current = setInterval(() => setElapsed(p => p + 1), 1000);
     try {
-      const s = appliedStrategy;
       const res = await runBacktest({
-        userUid:         u.userUid,
-        id:              s.id,
-        title:           s.title,
-        symbol:          s.symbol,
-        adxThreshold:    s.adxThreshold,
-        adxSidewaysFloor: s.adxSidewaysFloor,
-        adxPersist:      s.adxPersist,
-        diGapMin:        s.diGapMin,
-        rsiLongEntry:    s.rsiLongEntry,
-        rsiLongFloor:    s.rsiLongFloor,
-        rsiShortEntry:   s.rsiShortEntry,
-        rsiOversoldEntry: s.rsiOversoldEntry,
-        maxAddCount:     s.maxAddCount,
-        atrSlMult:       s.atrSlMult,
-        atrTpMult:       s.atrTpMult,
-        minHoldBars:     s.minHoldBars,
-        slCooldownBars:  s.slCooldownBars,
-        consecSlLimit:   s.consecSlLimit,
-        maxDdStop:       s.maxDdStop,
-        commission:      s.commission,
-        slippage:        s.slippage,
-        riskPerTrade:    s.riskPerTrade,
-        usePrevBarSignal:s.usePrevBarSignal,
-        initialCapital:  s.initialCapital,
-        indicatorWindow: s.indicatorWindow,
-        tradingDaysPerYear: s.tradingDaysPerYear,
+        userUid:          u.userUid,
+        symbol:           runSymbol,
+        strategyConfigId: selectedStrategyId,
+      });
+      if (res.data) {
+        setResults(prev => [res.data, ...prev]);
+      } else {
+        Alert.alert('실패', res.message || '백테스트 실행에 실패했습니다.');
+      }
+    } catch {
+      Alert.alert('오류', '서버 연결에 실패했습니다.');
+    } finally {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      setRunning(false);
+    }
+  };
+
+  const handleRunPortfolio = async () => {
+    if (running) return;
+    const u = await authStorage.get();
+    if (!u?.userUid) return;
+    setRunning(true);
+    setElapsed(0);
+    timerRef.current = setInterval(() => setElapsed(p => p + 1), 1000);
+    try {
+      const res = await runPortfolioBacktest({
+        userUid:    u.userUid,
+        mode:       portfolioRunMode,
+        activeOnly,
       });
       if (res.data) {
         setResults(prev => [res.data, ...prev]);
@@ -263,38 +343,119 @@ export default function BacktestScreen() {
 
   return (
     <View style={styles.container}>
-      {/* 적용된 전략 + 실행 */}
+      {/* 종목/전략 선택 + 실행 */}
       <View style={styles.runBox}>
-        {appliedStrategy ? (
-          <View style={styles.runBoxInner}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.appliedTitle}>{appliedStrategy.title}</Text>
-              <Text style={styles.appliedSub}>
-                {getSymbolName(appliedStrategy.symbol)} ({appliedStrategy.symbol})
+        <Text style={styles.runBoxLabel}>실전투자와 동일한 전략 로직으로 최근 60일치 데이터를 검증합니다</Text>
+
+        {/* 백테스트 방식: 특정 종목 1개 vs 세션 목록 전체(포트폴리오) */}
+        <View style={styles.typeTabRow}>
+          {(['SYMBOL', 'PORTFOLIO'] as const).map(t => (
+            <TouchableOpacity
+              key={t}
+              style={[styles.typeTab, backtestType === t && styles.typeTabActive]}
+              onPress={() => setBacktestType(t)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.typeTabText, backtestType === t && styles.typeTabTextActive]}>
+                {t === 'SYMBOL' ? '특정 종목' : '세션 종목 (포트폴리오)'}
               </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
+        {backtestType === 'SYMBOL' ? (
+          <>
+            <TouchableOpacity
+              style={styles.symbolBtn}
+              onPress={() => setShowSymbolPicker(true)}
+              activeOpacity={0.7}
+            >
+              <Text style={runSymbol ? styles.symbolBtnTextActive : styles.symbolBtnText}>
+                {runSymbol ? `${getSymbolName(runSymbol)} (${runSymbol})` : '종목을 선택하세요'}
+              </Text>
+              <Text style={styles.symbolBtnChevron}>▾</Text>
+            </TouchableOpacity>
+
+            {strategies.length === 0 ? (
+              <Text style={styles.noStrategyText}>전략 탭에서 전략 설정을 먼저 등록하세요</Text>
+            ) : (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.stratChipRow} contentContainerStyle={{ gap: 8 }}>
+                {strategies.map(s => {
+                  const active = s.id === selectedStrategyId;
+                  return (
+                    <TouchableOpacity
+                      key={s.id}
+                      onPress={() => setSelectedStrategyId(s.id!)}
+                      style={[styles.stratChip, active && styles.stratChipActive]}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={[styles.stratChipText, active && { color: colors.teal }]} numberOfLines={1}>
+                        {s.name || `전략 #${s.id}`}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
+          </>
+        ) : (
+          <>
+            <Text style={styles.noStrategyText}>
+              보유 세션 종목 전체를 실전/모의투자와 동일하게(Top2 필터, 세션별 전략, KIS 실잔고 시드머니) 동시 시뮬레이션합니다
+            </Text>
+            <View style={styles.modeRow}>
+              {(['LIVE', 'PAPER'] as const).map(m => (
+                <TouchableOpacity
+                  key={m}
+                  style={[styles.modeBtn, portfolioRunMode === m && (m === 'LIVE' ? styles.modeBtnLive : styles.modeBtnPaper)]}
+                  onPress={() => setPortfolioRunMode(m)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.modeBtnText, { color: portfolioRunMode === m ? (m === 'LIVE' ? colors.amber : colors.blue) : colors.textDim }]}>
+                    {m === 'LIVE' ? '실전' : '모의'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
             <TouchableOpacity
-              style={[styles.runBtn, running && styles.runBtnDisabled]}
-              onPress={handleRun}
-              disabled={running}
-              activeOpacity={0.8}
+              style={styles.activeOnlyRow}
+              onPress={() => setActiveOnly(v => !v)}
+              activeOpacity={0.7}
             >
-              {running ? (
-                <View style={{ alignItems: 'center' }}>
-                  <ActivityIndicator color={colors.bg} size="small" />
-                  <Text style={[styles.runBtnText, { fontSize: 10, marginTop: 2 }]}>
-                    {formatElapsed(elapsed)}
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.runBtnText}>실행</Text>
-              )}
+              <Text style={styles.activeOnlyText}>{activeOnly ? '활성(active) 세션만' : '전체 세션'}</Text>
+              <View style={[styles.switchTrack, activeOnly && styles.switchTrackOn]}>
+                <View style={[styles.switchThumb, activeOnly && styles.switchThumbOn]} />
+              </View>
             </TouchableOpacity>
-          </View>
-        ) : (
-          <Text style={styles.noStrategyText}>전략 탭에서 적용할 전략을 선택하세요</Text>
+          </>
         )}
+
+        <TouchableOpacity
+          style={[
+            styles.runBtnFull,
+            (backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) : running) && styles.runBtnDisabled,
+          ]}
+          onPress={backtestType === 'SYMBOL' ? handleRun : handleRunPortfolio}
+          disabled={backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) : running}
+          activeOpacity={0.8}
+        >
+          {running ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <ActivityIndicator color={colors.bg} size="small" />
+              <Text style={styles.runBtnText}>실행 중 ({formatElapsed(elapsed)})</Text>
+            </View>
+          ) : (
+            <Text style={styles.runBtnText}>실행하기</Text>
+          )}
+        </TouchableOpacity>
       </View>
+
+      <SymbolPickerModal
+        visible={showSymbolPicker}
+        selected={runSymbol}
+        onSelect={setRunSymbol}
+        onClose={() => setShowSymbolPicker(false)}
+      />
 
       <FlatList
         data={results}
@@ -309,7 +470,7 @@ export default function BacktestScreen() {
                   <Text style={styles.cardNo}>#{results.length - index}</Text>
                   <Text style={styles.cardTitle}>{item.strategyTitle ?? '-'}</Text>
                   <Text style={styles.cardSymbol}>
-                    {getSymbolName(item.symbol)} ({item.symbol})
+                    {symbolLabelOf(item.symbol)}
                   </Text>
                   {item.userName && <Text style={styles.cardUser}>{item.userName}</Text>}
                 </View>
@@ -395,15 +556,48 @@ const styles = StyleSheet.create({
   center:         { flex: 1, backgroundColor: colors.bg, alignItems: 'center', justifyContent: 'center' },
   runBox:         {
     backgroundColor: colors.surface, borderBottomWidth: 1,
-    borderBottomColor: colors.borderDim, padding: 14,
+    borderBottomColor: colors.borderDim, padding: 14, gap: 10,
   },
-  runBoxInner:    { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  appliedTitle:   { fontSize: 14, fontWeight: '700', color: colors.text },
-  appliedSub:     { fontSize: 12, color: colors.textDim, marginTop: 2 },
+  runBoxLabel:    { fontSize: 12, color: colors.textDim },
   noStrategyText: { fontSize: 13, color: colors.textDim, textAlign: 'center', paddingVertical: 4 },
-  runBtn:         {
+  typeTabRow:     { flexDirection: 'row', backgroundColor: colors.bg, borderRadius: 10, padding: 4, gap: 4 },
+  typeTab:        { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
+  typeTabActive:  { backgroundColor: colors.teal },
+  typeTabText:    { fontSize: 13, fontWeight: '600', color: colors.textDim },
+  typeTabTextActive: { color: colors.bg },
+  modeRow:        { flexDirection: 'row', backgroundColor: colors.bg, borderRadius: 10, padding: 4, gap: 4 },
+  modeBtn:        { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  modeBtnLive:    { backgroundColor: colors.amberDim },
+  modeBtnPaper:   { backgroundColor: colors.blueDim },
+  modeBtnText:    { fontSize: 14, fontWeight: '700' },
+  activeOnlyRow:  {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
+    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
+  },
+  activeOnlyText: { fontSize: 14, color: colors.text },
+  switchTrack:    { width: 44, height: 24, borderRadius: 12, backgroundColor: colors.surfaceAlt, padding: 2 },
+  switchTrackOn:  { backgroundColor: colors.teal },
+  switchThumb:    { width: 20, height: 20, borderRadius: 10, backgroundColor: '#fff' },
+  switchThumbOn:  { transform: [{ translateX: 20 }] },
+  symbolBtn:      {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
+    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
+  },
+  symbolBtnText:       { fontSize: 14, color: colors.textDim },
+  symbolBtnTextActive: { fontSize: 14, color: colors.text, fontWeight: '600' },
+  symbolBtnChevron:    { fontSize: 14, color: colors.textDim },
+  stratChipRow:   { flexGrow: 0 },
+  stratChip:      {
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
+    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 10,
+  },
+  stratChipActive: { borderColor: colors.teal, backgroundColor: colors.tealDim },
+  stratChipText:   { fontSize: 13, fontWeight: '600', color: colors.text, maxWidth: 160 },
+  runBtnFull:     {
     backgroundColor: colors.teal, borderRadius: 10,
-    paddingHorizontal: 20, paddingVertical: 10, minWidth: 70, alignItems: 'center',
+    paddingVertical: 13, alignItems: 'center',
   },
   runBtnDisabled: { backgroundColor: colors.surfaceAlt },
   runBtnText:     { color: colors.bg, fontSize: 14, fontWeight: '700' },
@@ -480,4 +674,15 @@ const detail = StyleSheet.create({
   tradeTime:    { fontSize: 11, color: colors.textDim, marginTop: 3 },
   tradePrice:   { fontSize: 11, color: colors.textDim, marginTop: 2 },
   tradeRet:     { fontSize: 14, fontWeight: '700' },
+});
+
+const picker = StyleSheet.create({
+  row:        {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    paddingHorizontal: 14, paddingVertical: 14,
+    borderBottomWidth: 1, borderBottomColor: colors.borderDim,
+  },
+  rowActive:  { backgroundColor: colors.tealDim },
+  rowText:    { fontSize: 14, color: colors.text, fontWeight: '500' },
+  rowSymbol:  { fontSize: 12, color: colors.textDim },
 });

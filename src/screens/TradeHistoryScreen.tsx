@@ -12,23 +12,23 @@ import type { TradeHistory } from '../types';
 
 const ACTION_COLOR: Record<string, string> = {
   BUY:         colors.teal,
+  SELL:        colors.sky,
   ADD_LONG:    colors.emerald,
   SELL_SHORT:  colors.rose,
-  ADD_SHORT:   colors.amber,
   CLOSE_LONG:  colors.sky,
   CLOSE_SHORT: colors.orange,
 };
 const ACTION_LABEL: Record<string, string> = {
   BUY:         '매수',
+  SELL:        '매도',
   ADD_LONG:    '추가매수',
   SELL_SHORT:  '공매도',
-  ADD_SHORT:   '추가공매도',
   CLOSE_LONG:  '청산(롱)',
   CLOSE_SHORT: '청산(숏)',
 };
 
 const MODE_FILTERS  = ['전체', 'LIVE', 'PAPER'];
-const ACTION_FILTERS = ['전체', 'BUY', 'ADD_LONG', 'SELL_SHORT', 'ADD_SHORT', 'CLOSE_LONG', 'CLOSE_SHORT'];
+const ACTION_FILTERS = ['전체', 'BUY', 'SELL', 'ADD_LONG', 'SELL_SHORT', 'CLOSE_LONG', 'CLOSE_SHORT'];
 const STATUS_FILTERS = ['전체', 'SUCCESS', 'FAILED'];
 
 function toDateStr(d: Date) {
@@ -132,7 +132,7 @@ const PAGE_SIZE = 15;
 
 function SummaryCards({ summaryList, totalCount }: { summaryList: TradeHistory[]; totalCount: number }) {
   const list = summaryList;
-  const closes = list.filter(t => t.action === 'CLOSE_LONG' || t.action === 'CLOSE_SHORT');
+  const closes = list.filter(t => t.action === 'SELL' || t.action === 'CLOSE_LONG' || t.action === 'CLOSE_SHORT');
   const pnls   = closes.map(t => t.realizedPnl ?? 0);
   const totalPnl   = pnls.reduce((a, b) => a + b, 0);
   const winCount   = pnls.filter(p => p > 0).length;
@@ -165,7 +165,7 @@ function SummaryCards({ summaryList, totalCount }: { summaryList: TradeHistory[]
 
 function TradeCard({ item, onPress }: { item: TradeHistory; onPress: () => void }) {
   const actionColor  = ACTION_COLOR[item.action] ?? colors.textDim;
-  const isClose      = item.action === 'CLOSE_LONG' || item.action === 'CLOSE_SHORT';
+  const isClose      = item.action === 'SELL' || item.action === 'CLOSE_LONG' || item.action === 'CLOSE_SHORT';
   const pnl          = item.realizedPnl;
   const pnlColor     = pnl != null && pnl >= 0 ? colors.sky : colors.rose;
   const statusColor  = item.orderStatus === 'SUCCESS' ? colors.emerald : colors.rose;
@@ -235,7 +235,7 @@ function TradeCard({ item, onPress }: { item: TradeHistory; onPress: () => void 
 
 function DetailModal({ item, onClose }: { item: TradeHistory | null; onClose: () => void }) {
   if (!item) return null;
-  const isClose  = item.action === 'CLOSE_LONG' || item.action === 'CLOSE_SHORT';
+  const isClose  = item.action === 'SELL' || item.action === 'CLOSE_LONG' || item.action === 'CLOSE_SHORT';
   const pnl      = item.realizedPnl;
   const pnlColor = pnl != null && pnl >= 0 ? colors.sky : colors.rose;
 

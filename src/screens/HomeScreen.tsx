@@ -46,15 +46,14 @@ function AssetTable({ liveBalance, liveHolding, liveOrderableCash, paperBalance,
 }
 
 function StatsTable({ live, paper }: {
-  live:  { total: number; active: number; stopped: number; long: number; short: number; waiting: number };
-  paper: { total: number; active: number; stopped: number; long: number; short: number; waiting: number };
+  live:  { total: number; active: number; stopped: number; long: number; waiting: number };
+  paper: { total: number; active: number; stopped: number; long: number; waiting: number };
 }) {
   const rows: { label: string; liveVal: number; paperVal: number; color: string }[] = [
     { label: '전체 세션',  liveVal: live.total,   paperVal: paper.total,   color: colors.text },
     { label: '실행 중',    liveVal: live.active,  paperVal: paper.active,  color: colors.emerald },
     { label: '중지됨',     liveVal: live.stopped, paperVal: paper.stopped, color: colors.textDim },
-    { label: '롱 포지션',  liveVal: live.long,    paperVal: paper.long,    color: colors.teal },
-    { label: '숏 포지션',  liveVal: live.short,   paperVal: paper.short,   color: colors.rose },
+    { label: '보유 중',    liveVal: live.long,    paperVal: paper.long,    color: colors.teal },
     { label: '대기 중',    liveVal: live.waiting, paperVal: paper.waiting, color: colors.amber },
   ];
   return (
@@ -147,7 +146,7 @@ export default function HomeScreen() {
 
       // KIS API로 자산 조회 후 로컬 DB에 저장
       if (uid && balanceParams.length > 0) {
-        const existing  = (await assetStorage.get(uid)) ?? {};
+        const existing: Partial<import('../utils/assetStorage').AssetData> = (await assetStorage.get(uid)) ?? {};
         const liveData  = liveBalRes?.status  === 200 ? liveBalRes.data  : null;
         const paperData = paperBalRes?.status === 200 ? paperBalRes.data : null;
         const newLiveBalance        = liveData?.totalBalance    ?? existing.liveBalance        ?? null;
@@ -186,7 +185,6 @@ export default function HomeScreen() {
     active:  list.filter(s => s.active === 1).length,
     stopped: list.filter(s => s.active === 0).length,
     long:    list.filter(s => s.currentPosition === 'LONG').length,
-    short:   list.filter(s => s.currentPosition === 'SHORT').length,
     waiting: list.filter(s => s.currentPosition === 'NONE' && s.active === 1).length,
   });
 

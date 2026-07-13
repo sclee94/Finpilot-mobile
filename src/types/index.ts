@@ -18,6 +18,7 @@ export interface User {
   userName: string;
   email: string;
   userPhone?: string;
+  password?: string;
   permission: number;
   status: number;
   loginToken?: string;
@@ -38,62 +39,66 @@ export interface User {
   kisPaperTokenExpiredAt?: string;
 }
 
+/**
+ * trading_session 테이블 매핑 (KOSPI 거래량+모멘텀 전략)
+ * currentPosition: 'NONE' | 'LONG' (공매도 없음)
+ * currentEquity: 현재잔고 / initialBalance 비율
+ * initialBalance: 수익률 계산 기준점 — 세션 생성/초기화 시점의 실제 KIS 잔고 (자동 캡처)
+ */
 export interface TradingSession {
   id: string;
   userUid: string;
   strategyConfigId: number | null;
   mode: 'LIVE' | 'PAPER';
   symbol: string;
+  symbolName: string | null;
   active: number;
-  currentPosition: 'NONE' | 'LONG' | 'SHORT';
-  barsHeld: number;
+  currentPosition: 'NONE' | 'LONG';
   sharesHeld: number | null;
-  stopPrice: number | null;
-  tpPrice: number | null;
-  cooldownBarsLeft: number;
-  consecSlCount: number;
-  currentEquity: number | null;
-  peakEquity: number;
   avgEntryPrice: number | null;
-  addCount: number | null;
+  currentEquity: number | null;
+  initialBalance: number | null;
   isStrategyUpdate: number;
   createdAt: string;
   lastUpdatedAt: string;
-  strategyConfig?: { id: number; title: string } | null;
+  strategyConfig?: {
+    id: number;
+    name?: string | null;
+    takeProfitPct?: number;
+    stopLossPct?: number;
+    pullbackMinPct?: number;
+    pullbackMaxPct?: number;
+    buyingVolumeRatio?: number;
+    stopLossVolumeRatio?: number;
+    pullbackVolumeRatio?: number;
+  } | null;
   userDTO?: { userName?: string } | null;
 }
 
+/** strategy_config 테이블 매핑 (KOSPI 전략, 유저별 커스텀 가능) */
 export interface StrategyConfig {
-  id: number;
-  userUid?: string;
-  title: string;
-  symbol: string;
-  initialCapital: number;
-  riskPerTrade: number;
-  usePrevBarSignal?: boolean;
-  adxThreshold?: number;
-  adxSidewaysFloor?: number;
-  adxPersist?: number;
-  diGapMin?: number;
-  rsiLongEntry?: number;
-  rsiLongFloor?: number;
-  rsiShortEntry?: number;
-  rsiOversoldEntry?: number;
-  maxAddCount?: number;
-  atrSlMult?: number;
-  atrTpMult?: number;
-  minHoldBars?: number;
-  slCooldownBars?: number;
-  consecSlLimit?: number;
-  maxDdStop?: number;
-  commission?: number;
-  slippage?: number;
-  indicatorWindow?: number;
-  tradingDaysPerYear?: number;
-  isUse: number;
-  menuGrade?: number;
+  id?: number;
+  userUid?: string | null;      // 소유자 — null이면 관리자 지정 추천(공용) 전략
+  isPublic?: number;            // 1=모두 사용 가능(공용), 0=본인 전용
+  name?: string | null;         // 전략 이름
+  takeProfitPct?: number;       // 즉시 익절 기준 % (당일 시가 대비)
+  stopLossPct?: number;         // 즉시 손절 기준 % (매수가 대비)
+  pullbackMinPct?: number;      // 눌림목 최소 하락폭 % (당일 고가 대비)
+  pullbackMaxPct?: number;      // 눌림목 최대 하락폭 % (당일 고가 대비)
+  buyingVolumeRatio?: number;   // 불타기 거래량 기준 % (현재 >= 평균 × ratio/100)
+  stopLossVolumeRatio?: number; // 손절 거래량 기준 % (현재 >= 평균 × ratio/100)
+  pullbackVolumeRatio?: number; // 눌림목 거래량 기준 % (현재 <= 평균 × ratio/100)
   createdAt?: string;
-  userDTO?: { userName?: string } | null;
+}
+
+/** strategy_menu 테이블 매핑 (매수 등급별 매수 비율) */
+export interface StrategyMenu {
+  id: number;
+  name: string;       // 예: "불타기 1등급"
+  menuType: 'BULLISH' | 'PULLBACK' | 'TAKE_PROFIT' | 'STOP_LOSS';
+  menuGrade: number;
+  buyRatio: number | null; // 매수 비율 % — 매도/제외 등급은 null
+  createdAt: string;
 }
 
 export interface BacktestTrade {
@@ -142,7 +147,7 @@ export interface TradeHistory {
   mode: 'LIVE' | 'PAPER';
   symbol: string;
   symbolName: string | null;
-  action: 'BUY' | 'SELL_SHORT' | 'CLOSE_LONG' | 'CLOSE_SHORT' | 'ADD_LONG' | 'ADD_SHORT';
+  action: 'BUY' | 'SELL' | 'ADD_LONG' | 'SELL_SHORT' | 'CLOSE_LONG' | 'CLOSE_SHORT';
   shares: number;
   orderStatus: 'SUCCESS' | 'FAILED';
   entryPrice: number | null;
