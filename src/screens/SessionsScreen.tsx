@@ -13,6 +13,7 @@ import {
   insertTradingSession,
   syncPosition,
   adjustCapital,
+  toggleForceCloseEnabled,
 } from '../api/tradeApi';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
@@ -28,6 +29,7 @@ function SessionCard({
   onDelete,
   onSync,
   onAdjustCapital,
+  onToggleForceClose,
 }: {
   session: TradingSession;
   syncing: boolean;
@@ -36,8 +38,10 @@ function SessionCard({
   onDelete: () => void;
   onSync: () => void;
   onAdjustCapital: () => void;
+  onToggleForceClose: () => void;
 }) {
   const isActive = session.active === 1;
+  const forceCloseOn = session.isForceCloseEnabled !== 0;
   const posColor = session.currentPosition === 'LONG' ? colors.teal : colors.textDim;
   const posLabel = session.currentPosition === 'LONG' ? '롱' : 'NONE';
   const returnPct = session.currentEquity != null ? (session.currentEquity - 1) * 100 : null;
@@ -125,6 +129,17 @@ function SessionCard({
         </TouchableOpacity>
         <TouchableOpacity style={[styles.actionBtn, styles.actionBtnCapital]} onPress={onAdjustCapital} activeOpacity={0.7}>
           <Text style={[styles.actionBtnText, { color: colors.emerald }]}>자본금 조정</Text>
+        </TouchableOpacity>
+      </View>
+      <View style={[styles.cardActions, { marginTop: 8 }]}>
+        <TouchableOpacity
+          style={[styles.actionBtn, forceCloseOn ? styles.actionBtnForceCloseOn : styles.actionBtnForceCloseOff]}
+          onPress={onToggleForceClose}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.actionBtnText, { color: forceCloseOn ? colors.teal : colors.textDim }]}>
+            15:18 강제청산 {forceCloseOn ? 'ON' : 'OFF'}
+          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -341,6 +356,17 @@ export default function SessionsScreen() {
     finally { setSyncingId(null); }
   };
 
+  const handleToggleForceClose = async (session: TradingSession) => {
+    const next = session.isForceCloseEnabled === 0 ? 1 : 0;
+    setSessions(prev => prev.map(s => s.id === session.id ? { ...s, isForceCloseEnabled: next } : s));
+    try {
+      await toggleForceCloseEnabled(session.id);
+    } catch {
+      setSessions(prev => prev.map(s => s.id === session.id ? { ...s, isForceCloseEnabled: session.isForceCloseEnabled } : s));
+      Alert.alert('오류', '요청에 실패했습니다.');
+    }
+  };
+
   const handleAdjustCapital = async (amount: number) => {
     if (!capitalTarget) return;
     setCapitalSubmitting(true);
@@ -439,6 +465,7 @@ export default function SessionsScreen() {
             onDelete={() => handleDelete(item)}
             onSync={() => handleSync(item)}
             onAdjustCapital={() => setCapitalTarget(item)}
+            onToggleForceClose={() => handleToggleForceClose(item)}
           />
         )}
         contentContainerStyle={styles.list}
@@ -527,6 +554,8 @@ const styles = StyleSheet.create({
   actionBtnDelete: { backgroundColor: colors.surfaceAlt, borderColor: colors.borderDim },
   actionBtnSync:   { backgroundColor: 'rgba(168,85,247,0.15)', borderColor: '#a855f7' },
   actionBtnCapital:{ backgroundColor: colors.emeraldDim, borderColor: colors.emerald },
+  actionBtnForceCloseOn:  { backgroundColor: colors.tealDim, borderColor: colors.teal },
+  actionBtnForceCloseOff: { backgroundColor: colors.surfaceAlt, borderColor: colors.borderDim },
   actionBtnText:   { fontSize: 12, fontWeight: '700' },
   empty:           { alignItems: 'center', paddingVertical: 60 },
   emptyText:       { color: colors.textDim, fontSize: 14 },

@@ -59,6 +59,7 @@ export interface TradingSession {
   currentEquity: number | null;
   initialBalance: number | null;
   isStrategyUpdate: number;
+  isForceCloseEnabled: number;
   createdAt: string;
   lastUpdatedAt: string;
   strategyConfig?: {

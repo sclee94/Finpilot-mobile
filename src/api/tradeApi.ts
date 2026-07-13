@@ -31,6 +31,10 @@ export const resetTradingSession = (id: string) =>
 export const updateSessionStrategyConfigId = (params: { id: string; strategyConfigId: number }) =>
   apiClient.put<ApiResponse<TradingSession>>('/trade/updateStrategyConfigId', params);
 
+/** 15:18 강제청산 적용 여부 토글 */
+export const toggleForceCloseEnabled = (id: string) =>
+  apiClient.put<ApiResponse<null>>('/trade/toggleForceCloseEnabled', { id });
+
 /** KIS 실잔고 동기화 — 보유 수량/평균단가/포지션 갱신 */
 export const syncPosition = (id: string) =>
   apiClient.put<ApiResponse<TradingSession>>('/trade/syncPosition', { id });
