@@ -113,6 +113,8 @@ export interface BacktestTrade {
   entryPrice: number;
   exitPrice: number;
   shares: number;
+  addCount?: number;
+  buyEvents?: string; // JSON 문자열 — addCount>0일 때만 파싱해서 사용
   positionSizePct: number;
   result: string;
   returnPct: number;

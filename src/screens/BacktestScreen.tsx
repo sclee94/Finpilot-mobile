@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
+import type { ReactNode } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   RefreshControl, ActivityIndicator, Alert, Modal, ScrollView,
@@ -42,6 +43,90 @@ function isPortfolioResult(symbol: string): boolean {
 
 function symbolLabelOf(symbol: string): string {
   return isPortfolioResult(symbol) ? symbol : `${getSymbolName(symbol)} (${symbol})`;
+}
+
+interface BuyEvent {
+  time: string;
+  price: number;
+  shares: number;
+  action: 'BUY' | 'ADD_LONG';
+}
+
+function parseBuyEvents(t: BacktestTrade): BuyEvent[] {
+  if (!t.buyEvents) return [];
+  try {
+    const events = JSON.parse(t.buyEvents);
+    return Array.isArray(events) ? events : [];
+  } catch {
+    return [];
+  }
+}
+
+// 추가매수가 있던 거래는 매수/추가매수/청산을 각각 별도 카드로 쪼개서 보여준다.
+// 없는 거래는 기존처럼 카드 1개(진입~청산)로 표시.
+function renderTradeCards(t: BacktestTrade, showSymbol: boolean): ReactNode[] {
+  const events = (t.addCount ?? 0) > 0 ? parseBuyEvents(t) : [];
+
+  if (events.length === 0) {
+    const retColor = Number(t.returnPct) >= 0 ? colors.teal : colors.rose;
+    const dirLabel = t.direction === 'BULLISH' ? '불타기' : t.direction === 'PULLBACK' ? '눌림목' : t.direction;
+    return [
+      <View key={t.id ?? t.tradeNo} style={detail.tradeRow}>
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+            <Text style={detail.tradeNo}>#{t.tradeNo}</Text>
+            {showSymbol && <Text style={detail.tradeSymbol} numberOfLines={1}>{t.symbol}</Text>}
+            <Text style={detail.tradeDir}>{dirLabel}</Text>
+            <Text style={[detail.tradeResult, { color: resultColorOf(t.result) }]}>{resultLabelOf(t.result)}</Text>
+          </View>
+          <Text style={detail.tradeTime}>{t.entryTime} → {t.exitTime}</Text>
+          <Text style={detail.tradePrice}>
+            진입 {Number(t.entryPrice).toLocaleString()} → 청산 {Number(t.exitPrice).toLocaleString()}
+          </Text>
+        </View>
+        <Text style={[detail.tradeRet, { color: retColor }]}>
+          {Number(t.returnPct) >= 0 ? '+' : ''}{Number(t.returnPct).toFixed(3)}%
+        </Text>
+      </View>,
+    ];
+  }
+
+  const cards: ReactNode[] = [];
+  events.forEach((ev, idx) => {
+    cards.push(
+      <View key={`${t.id ?? t.tradeNo}-buy-${idx}`} style={[detail.tradeRow, detail.tradeRowGrouped]}>
+        <View style={{ flex: 1 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+            <Text style={detail.tradeNo}>#{t.tradeNo}</Text>
+            {showSymbol && <Text style={detail.tradeSymbol} numberOfLines={1}>{t.symbol}</Text>}
+            <Text style={[detail.tradeResult, { color: ev.action === 'BUY' ? colors.teal : colors.amber }]}>
+              {ev.action === 'BUY' ? '매수' : '추가매수'}
+            </Text>
+          </View>
+          <Text style={detail.tradeTime}>{ev.time}</Text>
+          <Text style={detail.tradePrice}>{Number(ev.price).toLocaleString()}원 · +{ev.shares}주</Text>
+        </View>
+      </View>
+    );
+  });
+  cards.push(
+    <View key={`${t.id ?? t.tradeNo}-exit`} style={[detail.tradeRow, detail.tradeRowGrouped, detail.tradeRowGroupEnd]}>
+      <View style={{ flex: 1 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+          <Text style={detail.tradeNo}>#{t.tradeNo}</Text>
+          {showSymbol && <Text style={detail.tradeSymbol} numberOfLines={1}>{t.symbol}</Text>}
+          <Text style={[detail.tradeResult, { color: colors.rose }]}>청산</Text>
+          <Text style={[detail.tradeResult, { color: resultColorOf(t.result) }]}>{resultLabelOf(t.result)}</Text>
+        </View>
+        <Text style={detail.tradeTime}>{t.exitTime}</Text>
+        <Text style={detail.tradePrice}>{Number(t.exitPrice).toLocaleString()}원 · 합계 {t.shares}주</Text>
+      </View>
+      <Text style={[detail.tradeRet, { color: Number(t.returnPct) >= 0 ? colors.teal : colors.rose }]}>
+        {Number(t.returnPct) >= 0 ? '+' : ''}{Number(t.returnPct).toFixed(3)}%
+      </Text>
+    </View>
+  );
+  return cards;
 }
 
 function SymbolPickerModal({
@@ -94,7 +179,25 @@ function BacktestDetailModal({
   loading: boolean;
   onClose: () => void;
 }) {
-  const trades: BacktestTrade[] = result.trades ?? [];
+  const allTrades: BacktestTrade[] = result.trades ?? [];
+  const [symbolFilter, setSymbolFilter] = useState<string | null>(null);
+
+  // 종목별 요약 (여러 종목 거래가 섞인 포트폴리오 백테스트 결과에서 종목별로 묶어서 봄)
+  const symbolStats = (() => {
+    const map = new Map<string, { count: number; wins: number; sumRet: number }>();
+    for (const t of allTrades) {
+      const s = map.get(t.symbol) ?? { count: 0, wins: 0, sumRet: 0 };
+      s.count += 1;
+      if (Number(t.returnPct) > 0) s.wins += 1;
+      s.sumRet += Number(t.returnPct);
+      map.set(t.symbol, s);
+    }
+    return Array.from(map.entries())
+      .map(([symbol, s]) => ({ symbol, ...s, winRate: (s.wins / s.count) * 100 }))
+      .sort((a, b) => b.sumRet - a.sumRet);
+  })();
+
+  const trades = symbolFilter ? allTrades.filter(t => t.symbol === symbolFilter) : allTrades;
 
   return (
     <Modal visible animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -142,36 +245,41 @@ function BacktestDetailModal({
               ))}
             </View>
 
+            {/* 종목별 요약 — 종목이 2개 이상 섞인 결과(포트폴리오 백테스트)에서만 표시 */}
+            {symbolStats.length > 1 && (
+              <View style={detail.symbolSection}>
+                <Text style={detail.tradesTitle}>종목별 요약 ({symbolStats.length}종목)</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingRight: 12 }}>
+                  <TouchableOpacity
+                    onPress={() => setSymbolFilter(null)}
+                    style={[detail.symbolChip, symbolFilter === null && detail.symbolChipActive]}
+                  >
+                    <Text style={[detail.symbolChipText, symbolFilter === null && { color: colors.teal }]}>
+                      전체 ({allTrades.length})
+                    </Text>
+                  </TouchableOpacity>
+                  {symbolStats.map(s => (
+                    <TouchableOpacity
+                      key={s.symbol}
+                      onPress={() => setSymbolFilter(prev => prev === s.symbol ? null : s.symbol)}
+                      style={[detail.symbolChip, symbolFilter === s.symbol && detail.symbolChipActive]}
+                    >
+                      <Text style={[detail.symbolChipText, symbolFilter === s.symbol && { color: colors.teal }]} numberOfLines={1}>
+                        {s.symbol} ({s.count}건 · {s.winRate.toFixed(0)}% · {s.sumRet >= 0 ? '+' : ''}{s.sumRet.toFixed(1)}%)
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </View>
+            )}
+
             {/* 개별 거래 */}
             {trades.length > 0 && (
               <View style={detail.tradesSection}>
-                <Text style={detail.tradesTitle}>개별 거래 ({trades.length}건)</Text>
-                {trades.map(t => {
-                  const retColor = Number(t.returnPct) >= 0 ? colors.teal : colors.rose;
-                  const dirLabel =
-                    t.direction === 'BUY' || t.direction === 'LONG' ? '매수' :
-                    t.direction === 'SHORT' ? '매도' :
-                    t.direction === 'ADD_LONG' ? '추가매수' : t.direction;
-                  const resultLabel = resultLabelOf(t.result);
-                  return (
-                    <View key={t.id ?? t.tradeNo} style={detail.tradeRow}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
-                          <Text style={detail.tradeNo}>#{t.tradeNo}</Text>
-                          <Text style={detail.tradeDir}>{dirLabel}</Text>
-                          <Text style={[detail.tradeResult, { color: resultColorOf(t.result) }]}>{resultLabel}</Text>
-                        </View>
-                        <Text style={detail.tradeTime}>{t.entryTime} → {t.exitTime}</Text>
-                        <Text style={detail.tradePrice}>
-                          진입 {Number(t.entryPrice).toLocaleString()} → 청산 {Number(t.exitPrice).toLocaleString()}
-                        </Text>
-                      </View>
-                      <Text style={[detail.tradeRet, { color: retColor }]}>
-                        {Number(t.returnPct) >= 0 ? '+' : ''}{Number(t.returnPct).toFixed(3)}%
-                      </Text>
-                    </View>
-                  );
-                })}
+                <Text style={detail.tradesTitle}>
+                  개별 거래 ({trades.length}건{symbolFilter ? ` · ${symbolFilter}` : ''})
+                </Text>
+                {trades.flatMap(t => renderTradeCards(t, symbolStats.length > 1))}
               </View>
             )}
           </ScrollView>
@@ -661,6 +769,13 @@ const detail = StyleSheet.create({
   },
   summaryLabel: { fontSize: 11, color: colors.textDim, marginBottom: 4 },
   summaryValue: { fontSize: 16, fontWeight: '700', color: colors.text },
+  symbolSection:{ marginHorizontal: 12, marginTop: 12 },
+  symbolChip:   {
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8,
+  },
+  symbolChipActive: { borderColor: colors.teal, backgroundColor: colors.tealDim },
+  symbolChipText:   { fontSize: 12, fontWeight: '600', color: colors.text },
   tradesSection:{ margin: 12 },
   tradesTitle:  { fontSize: 14, fontWeight: '700', color: colors.text, marginBottom: 8 },
   tradeRow:     {
@@ -669,8 +784,13 @@ const detail = StyleSheet.create({
     borderColor: colors.borderDim, padding: 12, marginBottom: 6,
   },
   tradeNo:      { fontSize: 11, color: colors.textDim },
+  tradeSymbol:  { fontSize: 11, fontWeight: '600', color: colors.sky, maxWidth: 110 },
   tradeDir:     { fontSize: 13, fontWeight: '600', color: colors.text },
   tradeResult:  { fontSize: 11, fontWeight: '600' },
+  tradeRowGrouped: {
+    backgroundColor: colors.amberDim, borderColor: colors.amber, marginBottom: 2,
+  },
+  tradeRowGroupEnd: { marginBottom: 6 },
   tradeTime:    { fontSize: 11, color: colors.textDim, marginTop: 3 },
   tradePrice:   { fontSize: 11, color: colors.textDim, marginTop: 2 },
   tradeRet:     { fontSize: 14, fontWeight: '700' },
