@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, ScrollView,
-  RefreshControl, TouchableOpacity, ActivityIndicator,
+  RefreshControl, TouchableOpacity, ActivityIndicator, Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getTradingSessionList, getExecuteOnOff, setExecuteOnOff, getBalance } from '../api/tradeApi';
@@ -94,7 +94,7 @@ export default function HomeScreen() {
     const u = await authStorage.get();
     setUser(u);
     const isAdmin   = (u?.permission ?? 0) >= 99;
-    const userParam = isAdmin ? {} : { userUid: u?.userUid };
+    const userParam = isAdmin ? { userUid: u?.userUid, viewAll: true } : { userUid: u?.userUid };
     try {
       const [sessionRes, execRes] = await Promise.all([
         getTradingSessionList(userParam),
@@ -127,7 +127,7 @@ export default function HomeScreen() {
     const u = await authStorage.get();
     const uid = u?.userUid ?? '';
     const isAdmin   = (u?.permission ?? 0) >= 99;
-    const userParam = isAdmin ? {} : { userUid: u?.userUid };
+    const userParam = isAdmin ? { userUid: u?.userUid, viewAll: true } : { userUid: u?.userUid };
     try {
       const balanceParams: Parameters<typeof getBalance>[] = uid
         ? [
@@ -170,12 +170,29 @@ export default function HomeScreen() {
     finally { setRefreshing(false); }
   };
 
-  const toggleExec = async () => {
+  const toggleExec = () => {
     const next = execOn ? 0 : 1;
-    await setExecuteOnOff(next);
-    setExecOn(!execOn);
+    Alert.alert(
+      execOn ? '실전매매 전체 중지' : '실전매매 전체 실행',
+      execOn
+        ? '전체 유저의 실전매매 실행을 중지합니다. 계속하시겠습니까?'
+        : '전체 유저의 실전매매 실행을 시작합니다. 계속하시겠습니까?',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '확인',
+          style: execOn ? 'destructive' : 'default',
+          onPress: async () => {
+            if (!myUid) return;
+            await setExecuteOnOff(next, myUid);
+            setExecOn(!execOn);
+          },
+        },
+      ],
+    );
   };
 
+  const isAdmin        = (user?.permission ?? 0) >= 99;
   const myUid         = user?.userUid;
   const liveSessions  = sessions.filter(s => s.mode === 'LIVE'  && (!myUid || s.userUid === myUid));
   const paperSessions = sessions.filter(s => s.mode !== 'LIVE'  && (!myUid || s.userUid === myUid));
@@ -209,15 +226,17 @@ export default function HomeScreen() {
           <Text style={styles.greeting}>안녕하세요 👋</Text>
           <Text style={styles.userName}>{user?.userName ?? '사용자'}</Text>
         </View>
-        <TouchableOpacity
-          style={[styles.execButton, execOn ? styles.execOn : styles.execOff]}
-          onPress={toggleExec}
-          activeOpacity={0.8}
-        >
-          <Text style={[styles.execButtonText, execOn ? styles.execOnText : styles.execOffText]}>
-            {execOn ? '실행 중' : '중지됨'}
-          </Text>
-        </TouchableOpacity>
+        {isAdmin && (
+          <TouchableOpacity
+            style={[styles.execButton, execOn ? styles.execOn : styles.execOff]}
+            onPress={toggleExec}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.execButtonText, execOn ? styles.execOnText : styles.execOffText]}>
+              {execOn ? '실행 중' : '중지됨'}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       {/* 자산 현황 */}

@@ -38,6 +38,8 @@ function EditProfileModal({
   const [newPassword, setNewPassword]         = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [pwSaving, setPwSaving] = useState(false);
+  const [tradingIntervalMinutes, setTradingIntervalMinutes] = useState(15);
+  const [intervalSaving, setIntervalSaving] = useState(false);
 
   React.useEffect(() => {
     if (!visible || !user) return;
@@ -49,6 +51,7 @@ function EditProfileModal({
     setKisPaperAppSecret(user.kisPaperAppSecret ?? '');
     setKisPaperAccountNo(user.kisPaperAccountNo ?? '');
     setKisPaperAccountProduct(user.kisPaperAccountProduct ?? '01');
+    setTradingIntervalMinutes(user.tradingIntervalMinutes ?? 15);
     setNewPassword('');
     setConfirmPassword('');
   }, [visible, user?.userUid]);
@@ -79,6 +82,27 @@ function EditProfileModal({
       Alert.alert('오류', '서버 연결에 실패했습니다.');
     } finally {
       setPwSaving(false);
+    }
+  };
+
+  const handleIntervalSave = async (value: number) => {
+    if (intervalSaving) return;
+    const previous = tradingIntervalMinutes;
+    setTradingIntervalMinutes(value);
+    setIntervalSaving(true);
+    try {
+      const res = await userUpdate({ userUid: user.userUid, tradingIntervalMinutes: value });
+      if (res.status < 400) {
+        onSaved({ tradingIntervalMinutes: value });
+      } else {
+        setTradingIntervalMinutes(previous);
+        Alert.alert('오류', res.message || '저장에 실패했습니다.');
+      }
+    } catch {
+      setTradingIntervalMinutes(previous);
+      Alert.alert('오류', '서버 연결에 실패했습니다.');
+    } finally {
+      setIntervalSaving(false);
     }
   };
 
@@ -173,6 +197,24 @@ function EditProfileModal({
               ? <ActivityIndicator color={colors.bg} />
               : <Text style={modal.submitText}>비밀번호 변경</Text>}
           </TouchableOpacity>
+
+          <Text style={modal.sectionTitle}>자동매매 판단 주기</Text>
+          <Text style={modal.helperText}>이 주기마다 보유/후보 종목을 다시 판단합니다. 백테스트에도 동일하게 적용됩니다.</Text>
+          <View style={modal.intervalRow}>
+            {[5, 10, 15, 30].map((min) => (
+              <TouchableOpacity
+                key={min}
+                disabled={intervalSaving}
+                onPress={() => handleIntervalSave(min)}
+                style={[modal.intervalBtn, tradingIntervalMinutes === min && modal.intervalBtnActive]}
+                activeOpacity={0.8}
+              >
+                <Text style={[modal.intervalBtnText, tradingIntervalMinutes === min && modal.intervalBtnTextActive]}>
+                  {min}분
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
 
           <Text style={modal.sectionTitle}>한국투자증권 연동 — 실전투자</Text>
           <Field label="앱키 (App Key)"       value={kisAppKey}     onChangeText={setKisAppKey}     placeholder="KIS 실전 앱키 입력" />
@@ -408,6 +450,15 @@ const modal = StyleSheet.create({
   },
   field:          { marginBottom: 16 },
   label:          { fontSize: 13, color: colors.textSub, fontWeight: '600', marginBottom: 8 },
+  helperText:     { fontSize: 12, color: colors.textDim, marginBottom: 12, marginTop: -6 },
+  intervalRow:    { flexDirection: 'row', gap: 8, marginBottom: 20 },
+  intervalBtn:    {
+    flex: 1, paddingVertical: 12, borderRadius: 12, alignItems: 'center',
+    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
+  },
+  intervalBtnActive:     { backgroundColor: colors.tealDim, borderColor: colors.teal },
+  intervalBtnText:       { fontSize: 14, fontWeight: '700', color: colors.textDim },
+  intervalBtnTextActive: { color: colors.teal },
   input:          {
     backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
     borderRadius: 12, paddingHorizontal: 14, paddingVertical: 13,

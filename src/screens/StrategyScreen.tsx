@@ -16,16 +16,42 @@ import type { StrategyConfig, StrategyMenu } from '../types';
 
 type NumField = keyof Pick<StrategyConfig,
   'takeProfitPct' | 'stopLossPct' | 'pullbackMinPct' | 'pullbackMaxPct' |
-  'buyingVolumeRatio' | 'stopLossVolumeRatio' | 'pullbackVolumeRatio'>;
+  'buyingVolumeRatio' | 'stopLossVolumeRatio' | 'pullbackVolumeRatio' |
+  'rsiOversold' | 'rsiOverbought' | 'rsiExitMinGainPct' |
+  'scoreTakeProfitThreshold' | 'scoreStopLossThreshold' |
+  'volBaselineCv' | 'volMultMin' | 'volMultMax' | 'stopLossCooldownMinutes' |
+  'adxPeriod' | 'adxThreshold' | 'pullbackTrendMaDays' | 'riskPerTradePct'>;
 
-const CONFIG_FIELDS: { key: NumField; label: string; format: (v: number) => string }[] = [
-  { key: 'takeProfitPct',       label: '즉시 익절 기준 (당일 시가 대비)', format: v => `+${v}%` },
-  { key: 'stopLossPct',         label: '즉시 손절 기준 (매수가 대비)',   format: v => `-${v}%` },
-  { key: 'pullbackMinPct',      label: '눌림목 최소 하락폭 (당일 고가 대비)', format: v => `${v}%` },
-  { key: 'pullbackMaxPct',      label: '눌림목 최대 하락폭 (당일 고가 대비)', format: v => `${v}%` },
-  { key: 'buyingVolumeRatio',   label: '불타기 — 거래량 급증 확인 (현재 ≥ 평균 × 비율)',  format: v => `${v}%` },
-  { key: 'stopLossVolumeRatio', label: '손절 — 패닉 매도 확인 (현재 ≥ 평균 × 비율)',      format: v => `${v}%` },
-  { key: 'pullbackVolumeRatio', label: '눌림목 — 거래량 감소 확인 (현재 ≤ 평균 × 비율)',  format: v => `${v}%` },
+// 4단계 파이프라인: 1차 필터(후보 자격 자체를 거름) → 2차 필터(스코어링 전 추세강도 게이트)
+// → 매수·매도 전략 1단계(즉시 판단) → 매수·매도 전략 2단계(패턴/RSI 정밀 스코어링)
+const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계'] as const;
+type Stage = typeof STAGE_ORDER[number];
+
+const CONFIG_FIELDS: { key: NumField; label: string; format: (v: number) => string; stage: Stage; disabled?: boolean }[] = [
+  // ── 1차 필터 ──────────────────────────────────────────
+  { key: 'buyingVolumeRatio',   stage: '1차 필터', label: '불타기 거래량 급증 확인 (현재 ≥ 평균 × 비율)', format: v => `${v}%` },
+  { key: 'pullbackMinPct',      stage: '1차 필터', label: '눌림목 최소 하락폭 (당일 고가 대비)', format: v => `${v}%` },
+  { key: 'pullbackMaxPct',      stage: '1차 필터', label: '눌림목 최대 하락폭 (당일 고가 대비)', format: v => `${v}%` },
+  { key: 'stopLossCooldownMinutes', stage: '1차 필터', label: '손절 후 재진입 쿨다운', format: v => `${v}분` },
+  { key: 'pullbackVolumeRatio', stage: '1차 필터', label: '눌림목 거래량 (미사용 — 값을 바꿔도 매매에 영향 없음)', format: v => `${v}%`, disabled: true },
+  // ── 2차 필터 ──────────────────────────────────────────
+  { key: 'adxPeriod',           stage: '2차 필터', label: 'ADX 계산 기간',            format: v => `${v}봉` },
+  { key: 'adxThreshold',        stage: '2차 필터', label: 'ADX 진입 게이트 문턱값',   format: v => `${v}` },
+  { key: 'pullbackTrendMaDays', stage: '2차 필터', label: '눌림목 일봉 추세 게이트 (N일 이평)', format: v => `${v}일` },
+  // ── 매수·매도 전략 1단계 (즉시 판단) ─────────────────
+  { key: 'takeProfitPct', stage: '매수·매도 전략 1단계', label: '즉시 익절 / 추격매수 방지 기준', format: v => `+${v}%` },
+  { key: 'stopLossPct',   stage: '매수·매도 전략 1단계', label: '즉시 손절 기준 (매도)', format: v => `-${v}%` },
+  { key: 'riskPerTradePct', stage: '매수·매도 전략 1단계', label: '트레이드당 리스크 상한 (계좌 대비, 0=미적용)', format: v => `${v}%` },
+  { key: 'volBaselineCv', stage: '매수·매도 전략 1단계', label: '변동성 기준값 (ATR%)', format: v => `${v}` },
+  { key: 'volMultMin',    stage: '매수·매도 전략 1단계', label: '변동성 배수 하한',    format: v => `${v}배` },
+  { key: 'volMultMax',    stage: '매수·매도 전략 1단계', label: '변동성 배수 상한',    format: v => `${v}배` },
+  // ── 매수·매도 전략 2단계 (정밀 스코어링) ─────────────
+  { key: 'rsiOversold',              stage: '매수·매도 전략 2단계', label: '눌림목 과매도 기준 (RSI 14, 매수)', format: v => `${v}` },
+  { key: 'stopLossVolumeRatio',      stage: '매수·매도 전략 2단계', label: '손절 거래량 확인 (매도)', format: v => `${v}%` },
+  { key: 'rsiOverbought',            stage: '매수·매도 전략 2단계', label: 'RSI 과매수 기준 (매도)',  format: v => `${v}` },
+  { key: 'rsiExitMinGainPct',        stage: '매수·매도 전략 2단계', label: 'RSI 조기청산 최소 수익률 (매도)', format: v => `${v}%` },
+  { key: 'scoreTakeProfitThreshold', stage: '매수·매도 전략 2단계', label: '익절 스코어링 문턱값 (매도)', format: v => `${v}점` },
+  { key: 'scoreStopLossThreshold',   stage: '매수·매도 전략 2단계', label: '손절 스코어링 문턱값 (매도)', format: v => `${v}점` },
 ];
 
 const MENU_TYPE_LABEL: Record<StrategyMenu['menuType'], string> = {
@@ -68,6 +94,11 @@ function StrategyFormModal({
     const payload: Record<string, number> = {};
     for (const f of CONFIG_FIELDS) {
       const n = parseFloat(form[f.key]);
+      if (f.disabled) {
+        // 미사용 필드 — 값 검증 없이 기존 값(없으면 기본값) 그대로 전송
+        payload[f.key] = isNaN(n) ? 80 : n;
+        continue;
+      }
       if (isNaN(n)) { Alert.alert('입력 오류', '모든 값을 입력해주세요.'); return; }
       payload[f.key] = n;
     }
@@ -113,20 +144,24 @@ function StrategyFormModal({
               />
             </View>
           </View>
-          <View style={detail.section}>
-            {CONFIG_FIELDS.map(f => (
-              <View key={f.key} style={detail.editRow}>
-                <Text style={detail.rowLabel}>{f.label}</Text>
-                <TextInput
-                  style={detail.input}
-                  value={form[f.key]}
-                  onChangeText={t => setForm(prev => ({ ...prev, [f.key]: t }))}
-                  keyboardType="numeric"
-                  placeholderTextColor={colors.textDim}
-                />
-              </View>
-            ))}
-          </View>
+          {STAGE_ORDER.map(stage => (
+            <View key={stage} style={detail.section}>
+              <Text style={detail.sectionHeading}>{stage}</Text>
+              {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => (
+                <View key={f.key} style={detail.editRow}>
+                  <Text style={detail.rowLabel}>{f.label}</Text>
+                  <TextInput
+                    style={[detail.input, f.disabled && detail.inputDisabled]}
+                    value={form[f.key]}
+                    onChangeText={t => setForm(prev => ({ ...prev, [f.key]: t }))}
+                    editable={!f.disabled}
+                    keyboardType="numeric"
+                    placeholderTextColor={colors.textDim}
+                  />
+                </View>
+              ))}
+            </View>
+          ))}
         </ScrollView>
         <View style={detail.footer}>
           <TouchableOpacity style={detail.applyBtn} onPress={handleSave} disabled={saving} activeOpacity={0.8}>
@@ -268,17 +303,20 @@ export default function StrategyScreen() {
         </View>
 
         {selected ? (
-          <View style={styles.card}>
-            {CONFIG_FIELDS.map(f => {
-              const v = selected[f.key];
-              return (
-                <View key={f.key} style={styles.row}>
-                  <Text style={styles.rowLabel}>{f.label}</Text>
-                  <Text style={styles.rowValue}>{v != null ? f.format(v) : '—'}</Text>
-                </View>
-              );
-            })}
-          </View>
+          STAGE_ORDER.map(stage => (
+            <View key={stage} style={styles.card}>
+              <Text style={styles.cardHeading}>{stage}</Text>
+              {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => {
+                const v = selected[f.key];
+                return (
+                  <View key={f.key} style={styles.row}>
+                    <Text style={[styles.rowLabel, f.disabled && { opacity: 0.6 }]}>{f.label}</Text>
+                    <Text style={[styles.rowValue, f.disabled && { opacity: 0.6 }]}>{v != null ? f.format(v) : '—'}</Text>
+                  </View>
+                );
+              })}
+            </View>
+          ))
         ) : (
           <View style={styles.empty}><Text style={styles.emptyText}>전략 설정이 없습니다</Text></View>
         )}
@@ -390,6 +428,11 @@ const detail = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, borderRadius: 10,
     paddingHorizontal: 12, paddingVertical: 8, color: colors.text, fontSize: 14,
     backgroundColor: colors.surface,
+  },
+  inputDisabled: { opacity: 0.5 },
+  sectionHeading: {
+    fontSize: 13, fontWeight: '700', color: colors.teal,
+    paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4,
   },
   footer:     { padding: 16, borderTopWidth: 1, borderTopColor: colors.borderDim },
   applyBtn:   { backgroundColor: colors.teal, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },

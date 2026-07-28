@@ -4,10 +4,12 @@ import { apiClient } from './apiClient';
 export const getExecuteOnOff = () =>
   apiClient.post<ApiResponse<{ isEnabled: number }>>('/trade/getExecuteOnOFF');
 
-export const setExecuteOnOff = (isEnabled: number) =>
-  apiClient.put<ApiResponse<{ isEnabled: number }>>('/trade/set/executeOnOff', { isEnabled });
+/** 서버가 userUid로 관리자 권한을 재확인함 */
+export const setExecuteOnOff = (isEnabled: number, userUid: string) =>
+  apiClient.put<ApiResponse<{ isEnabled: number }>>('/trade/set/executeOnOff', { isEnabled, userUid });
 
-export const getTradingSessionList = (params: Partial<{ userUid: string | null; userName: string; email: string; permission: number; status: number }>) =>
+/** 서버가 userUid로 관리자 권한을 재확인함 */
+export const getTradingSessionList = (params: Partial<{ userUid: string | null; viewAll: boolean }>) =>
   apiClient.post<ApiResponse<TradingSession[]>>('/trade/getTradingSessionList', params);
 
 /** 세션 생성 — initialBalance는 서버가 KIS 실잔고를 자동 캡처하므로 클라이언트에서 보내지 않음 */

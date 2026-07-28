@@ -14,12 +14,13 @@ import {
   syncPosition,
   adjustCapital,
   toggleForceCloseEnabled,
+  updateSessionStrategyConfigId,
 } from '../api/tradeApi';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
 import { getSymbolName } from '../constants/symbolNames';
-import type { TradingSession } from '../types';
+import type { TradingSession, StrategyConfig } from '../types';
 
 function SessionCard({
   session,
@@ -30,6 +31,7 @@ function SessionCard({
   onSync,
   onAdjustCapital,
   onToggleForceClose,
+  onChangeStrategy,
 }: {
   session: TradingSession;
   syncing: boolean;
@@ -39,6 +41,7 @@ function SessionCard({
   onSync: () => void;
   onAdjustCapital: () => void;
   onToggleForceClose: () => void;
+  onChangeStrategy: () => void;
 }) {
   const isActive = session.active === 1;
   const forceCloseOn = session.isForceCloseEnabled !== 0;
@@ -67,15 +70,15 @@ function SessionCard({
 
       <View style={styles.strategyRow}>
         {session.strategyConfig ? (
-          <View style={styles.strategyBadge}>
+          <TouchableOpacity style={styles.strategyBadge} onPress={onChangeStrategy} activeOpacity={0.7}>
             <Text style={styles.strategyText}>
-              {session.strategyConfig.name || `전략 #${session.strategyConfigId}`} · 익절 +{session.strategyConfig.takeProfitPct}% · 손절 -{session.strategyConfig.stopLossPct}%
+              {session.strategyConfig.name || `전략 #${session.strategyConfigId}`} · 익절 +{session.strategyConfig.takeProfitPct}% · 손절 -{session.strategyConfig.stopLossPct}% (변경)
             </Text>
-          </View>
+          </TouchableOpacity>
         ) : (
-          <View style={[styles.strategyBadge, styles.strategyBadgeNone]}>
-            <Text style={[styles.strategyText, { color: colors.textDim }]}>전략 미지정</Text>
-          </View>
+          <TouchableOpacity style={[styles.strategyBadge, styles.strategyBadgeNone]} onPress={onChangeStrategy} activeOpacity={0.7}>
+            <Text style={[styles.strategyText, { color: colors.textDim }]}>전략 미지정 (탭해서 선택)</Text>
+          </TouchableOpacity>
         )}
       </View>
 
@@ -276,6 +279,81 @@ function AdjustCapitalModal({
   );
 }
 
+function StrategyChangeModal({
+  visible,
+  currentStrategyId,
+  currentStrategyName,
+  strategyList,
+  loading,
+  onClose,
+  onSelect,
+}: {
+  visible: boolean;
+  currentStrategyId: number | null;
+  currentStrategyName: string;
+  strategyList: StrategyConfig[];
+  loading: boolean;
+  onClose: () => void;
+  onSelect: (strategy: StrategyConfig) => void;
+}) {
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
+      <View style={modal.container}>
+        <View style={modal.handle} />
+        <View style={modal.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={modal.title}>전략 변경</Text>
+            <Text style={{ fontSize: 12, color: colors.textDim, marginTop: 4 }}>현재: {currentStrategyName}</Text>
+          </View>
+          <TouchableOpacity onPress={onClose} style={modal.closeBtn}>
+            <Text style={modal.closeText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+        {loading ? (
+          <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+            <ActivityIndicator color={colors.teal} size="large" />
+          </View>
+        ) : (
+          <ScrollView style={modal.scroll}>
+            {strategyList.length === 0 ? (
+              <Text style={modal.hint}>등록된 전략이 없습니다</Text>
+            ) : (
+              strategyList.map(s => {
+                const isCurrent = s.id === currentStrategyId;
+                return (
+                  <TouchableOpacity
+                    key={s.id}
+                    disabled={isCurrent}
+                    onPress={() => onSelect(s)}
+                    style={[modal.field, strategyPicker.row, isCurrent && strategyPicker.rowCurrent]}
+                    activeOpacity={0.7}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={strategyPicker.name}>{s.name || `전략 #${s.id}`}</Text>
+                      {isCurrent && <Text style={strategyPicker.currentTag}>적용중</Text>}
+                    </View>
+                    <Text style={strategyPicker.detail}>
+                      익절 +{s.takeProfitPct}% · 손절 -{s.stopLossPct}%
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })
+            )}
+          </ScrollView>
+        )}
+      </View>
+    </Modal>
+  );
+}
+
+const strategyPicker = StyleSheet.create({
+  row:         { borderWidth: 1, borderColor: colors.borderDim, borderRadius: 12, backgroundColor: colors.bg },
+  rowCurrent:  { opacity: 0.5, borderColor: colors.amber },
+  name:        { fontSize: 14, fontWeight: '700', color: colors.text },
+  currentTag:  { fontSize: 11, color: colors.amber, fontWeight: '700' },
+  detail:      { fontSize: 12, color: colors.textDim, marginTop: 4 },
+});
+
 export default function SessionsScreen() {
   const [sessions,   setSessions]   = useState<TradingSession[]>([]);
   const [loading,    setLoading]    = useState(true);
@@ -286,12 +364,15 @@ export default function SessionsScreen() {
   const [syncingId,  setSyncingId]  = useState<string | null>(null);
   const [capitalTarget, setCapitalTarget] = useState<TradingSession | null>(null);
   const [capitalSubmitting, setCapitalSubmitting] = useState(false);
+  const [strategyChangeTarget, setStrategyChangeTarget] = useState<TradingSession | null>(null);
+  const [strategyList, setStrategyList] = useState<StrategyConfig[]>([]);
+  const [strategyListLoading, setStrategyListLoading] = useState(false);
 
   const load = async (showLoader = true) => {
     if (showLoader) setLoading(true);
     const u = await authStorage.get();
     const isAdmin = (u?.permission ?? 0) >= 99;
-    const userParams = isAdmin ? {} : { userUid: u?.userUid };
+    const userParams = isAdmin ? { userUid: u?.userUid, viewAll: true } : { userUid: u?.userUid };
     try {
       const sessionRes = await getTradingSessionList(userParams);
       if (sessionRes.status === 200) setSessions(sessionRes.data ?? []);
@@ -376,6 +457,44 @@ export default function SessionsScreen() {
       setCapitalTarget(null);
     } catch { Alert.alert('오류', '자본금 조정에 실패했습니다.'); }
     finally { setCapitalSubmitting(false); }
+  };
+
+  const openStrategyChange = async (session: TradingSession) => {
+    setStrategyChangeTarget(session);
+    setStrategyListLoading(true);
+    try {
+      const u = await authStorage.get();
+      const res = await getStrategyConfigList({ userUid: u?.userUid });
+      setStrategyList(res.data?.content ?? []);
+    } catch { /* silent */ }
+    finally { setStrategyListLoading(false); }
+  };
+
+  const handleSelectStrategy = async (strategy: StrategyConfig) => {
+    if (!strategyChangeTarget || !strategy.id) return;
+    const sessionId = strategyChangeTarget.id;
+    try {
+      await updateSessionStrategyConfigId({ id: sessionId, strategyConfigId: strategy.id });
+      // API가 갱신된 세션을 돌려주지 않아서, 이미 들고 있는 선택된 전략 객체로 즉시 반영
+      setSessions(prev => prev.map(s => s.id === sessionId ? {
+        ...s,
+        strategyConfigId: strategy.id!,
+        strategyConfig: {
+          id:                  strategy.id!,
+          name:                strategy.name,
+          takeProfitPct:       strategy.takeProfitPct,
+          stopLossPct:         strategy.stopLossPct,
+          pullbackMinPct:      strategy.pullbackMinPct,
+          pullbackMaxPct:      strategy.pullbackMaxPct,
+          buyingVolumeRatio:   strategy.buyingVolumeRatio,
+          stopLossVolumeRatio: strategy.stopLossVolumeRatio,
+          pullbackVolumeRatio: strategy.pullbackVolumeRatio,
+        },
+      } : s));
+      setStrategyChangeTarget(null);
+    } catch {
+      Alert.alert('오류', '전략 변경에 실패했습니다.');
+    }
   };
 
   const handleCreate = async (data: { symbol: string; mode: 'LIVE' | 'PAPER' }) => {
@@ -466,6 +585,7 @@ export default function SessionsScreen() {
             onSync={() => handleSync(item)}
             onAdjustCapital={() => setCapitalTarget(item)}
             onToggleForceClose={() => handleToggleForceClose(item)}
+            onChangeStrategy={() => openStrategyChange(item)}
           />
         )}
         contentContainerStyle={styles.list}
@@ -495,6 +615,16 @@ export default function SessionsScreen() {
         submitting={capitalSubmitting}
         onClose={() => setCapitalTarget(null)}
         onSubmit={handleAdjustCapital}
+      />
+
+      <StrategyChangeModal
+        visible={strategyChangeTarget != null}
+        currentStrategyId={strategyChangeTarget?.strategyConfigId ?? null}
+        currentStrategyName={strategyChangeTarget?.strategyConfig?.name || `전략 #${strategyChangeTarget?.strategyConfigId ?? '-'}`}
+        strategyList={strategyList}
+        loading={strategyListLoading}
+        onClose={() => setStrategyChangeTarget(null)}
+        onSelect={handleSelectStrategy}
       />
     </View>
   );

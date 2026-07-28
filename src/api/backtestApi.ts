@@ -1,7 +1,7 @@
 import type { ApiResponse, PageResponse, BacktestResult } from '../types';
 import { apiClient } from './apiClient';
 
-export const getBacktestList = (params: Partial<{ userUid: string | null; userName: string; email: string; permission: number; status: number; page: number; size: number }>) =>
+export const getBacktestList = (params: Partial<{ userUid: string | null; viewAll: boolean; page: number; size: number }>) =>
   apiClient.post<ApiResponse<PageResponse<BacktestResult>>>('/backtest/getBacktestList', params);
 
 export const getBacktest = (id: number, userUid: string) =>

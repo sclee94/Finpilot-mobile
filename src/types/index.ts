@@ -37,6 +37,7 @@ export interface User {
   kisPaperAccountProduct?: string;
   kisPaperAccessToken?: string;
   kisPaperTokenExpiredAt?: string;
+  tradingIntervalMinutes?: number; // 자동매매 판단 주기(분) — 5/10/15/30 중 선택, 기본 15
 }
 
 /**
@@ -89,6 +90,19 @@ export interface StrategyConfig {
   buyingVolumeRatio?: number;   // 불타기 거래량 기준 % (현재 >= 평균 × ratio/100)
   stopLossVolumeRatio?: number; // 손절 거래량 기준 % (현재 >= 평균 × ratio/100)
   pullbackVolumeRatio?: number; // 눌림목 거래량 기준 % (현재 <= 평균 × ratio/100)
+  rsiOversold?: number;               // 눌림목 매수 보너스 RSI(14) 과매도 기준 (미만이면 보너스)
+  rsiOverbought?: number;             // 익절 조기청산 RSI(14) 과매수 기준 (초과면 강화)
+  rsiExitMinGainPct?: number;         // RSI 과매수 조기청산 발동 최소 수익률 % (매수가 대비)
+  scoreTakeProfitThreshold?: number;  // 익절 스코어링 매도 문턱값 (0~4점 만점)
+  scoreStopLossThreshold?: number;    // 손절 스코어링 매도 문턱값 (0~4점 만점)
+  volBaselineCv?: number;             // 변동성 배수 산출 기준 ATR%(평범한 30분 True Range 변동률) — 필드명은 과거 CV% 시절 그대로 유지
+  volMultMin?: number;                // 변동성 배수 하한
+  volMultMax?: number;                // 변동성 배수 상한
+  stopLossCooldownMinutes?: number;   // 손절 후 재진입 쿨다운 (분)
+  adxPeriod?: number;                 // ADX 계산 기간 (기본 14)
+  adxThreshold?: number;              // ADX 추세강도 진입 게이트 문턱값 (미만이면 신규진입 차단, 청산엔 미적용)
+  pullbackTrendMaDays?: number;       // 눌림목 일봉 추세 게이트 — N일 이동평균 (현재가가 이 위에 있어야 눌림목 인정)
+  riskPerTradePct?: number;           // 트레이드당 리스크 상한 % (계좌총액 기준) — 손절 시 이 비율만 잃도록 매수금액을 ATR 기반으로 캡
   createdAt?: string;
 }
 

@@ -315,7 +315,7 @@ export default function BacktestScreen() {
     if (showLoader) setLoading(true);
     const u = await authStorage.get();
     const isAdmin = (u?.permission ?? 0) >= 99;
-    const adminParams = { userUid: null, userName: '', email: '', permission: 0, status: 0 };
+    const adminParams = { userUid: u?.userUid ?? null, viewAll: true };
     const userParams  = { userUid: u?.userUid ?? null };
     try {
       const [resultsRes, stratRes] = await Promise.all([
@@ -341,7 +341,7 @@ export default function BacktestScreen() {
     setLoadingMore(true);
     const u = await authStorage.get();
     const isAdmin = (u?.permission ?? 0) >= 99;
-    const adminParams = { userUid: null, userName: '', email: '', permission: 0, status: 0 };
+    const adminParams = { userUid: u?.userUid ?? null, viewAll: true };
     const userParams  = { userUid: u?.userUid ?? null };
     try {
       const nextPage = resultsPage + 1;
