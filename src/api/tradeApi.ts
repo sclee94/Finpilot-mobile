@@ -33,6 +33,10 @@ export const resetTradingSession = (id: string) =>
 export const updateSessionStrategyConfigId = (params: { id: string; strategyConfigId: number }) =>
   apiClient.put<ApiResponse<TradingSession>>('/trade/updateStrategyConfigId', params);
 
+/** 세션 전략 일괄 변경 (userUid+mode 전체 세션) */
+export const updateSessionStrategyConfigIdBulk = (params: { userUid: string; mode: 'LIVE' | 'PAPER'; strategyConfigId: number }) =>
+  apiClient.put<ApiResponse<TradingSession>>('/trade/updateStrategyConfigIdBulk', params);
+
 /** 15:18 강제청산 적용 여부 토글 */
 export const toggleForceCloseEnabled = (id: string) =>
   apiClient.put<ApiResponse<null>>('/trade/toggleForceCloseEnabled', { id });

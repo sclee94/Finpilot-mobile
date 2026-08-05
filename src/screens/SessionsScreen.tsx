@@ -15,11 +15,13 @@ import {
   adjustCapital,
   toggleForceCloseEnabled,
   updateSessionStrategyConfigId,
+  updateSessionStrategyConfigIdBulk,
 } from '../api/tradeApi';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
 import { getSymbolName } from '../constants/symbolNames';
+import SymbolPickerModal from '../components/SymbolPickerModal';
 import type { TradingSession, StrategyConfig } from '../types';
 
 function SessionCard({
@@ -164,8 +166,8 @@ function CreateSessionModal({
   const reset = () => { setSymbol(''); setMode('PAPER'); };
 
   const handleSubmit = () => {
-    if (!symbol.trim()) { Alert.alert('입력 오류', '종목 코드를 입력해주세요.'); return; }
-    onSubmit({ symbol: symbol.trim().toUpperCase(), mode });
+    if (!symbol.trim()) { Alert.alert('입력 오류', '종목을 선택해주세요.'); return; }
+    onSubmit({ symbol: symbol.trim(), mode });
     reset();
   };
 
@@ -183,15 +185,8 @@ function CreateSessionModal({
         </View>
         <ScrollView style={modal.scroll} keyboardShouldPersistTaps="handled">
           <View style={modal.field}>
-            <Text style={modal.label}>종목 코드</Text>
-            <TextInput
-              style={modal.input}
-              value={symbol}
-              onChangeText={setSymbol}
-              placeholder="예: 005930"
-              placeholderTextColor={colors.textDim}
-              autoCapitalize="characters"
-            />
+            <Text style={modal.label}>종목</Text>
+            <SymbolPickerModal value={symbol} onChange={(s) => setSymbol(s)} />
           </View>
 
           <View style={modal.field}>
@@ -283,16 +278,20 @@ function StrategyChangeModal({
   visible,
   currentStrategyId,
   currentStrategyName,
+  bulkMode,
   strategyList,
   loading,
+  submitting,
   onClose,
   onSelect,
 }: {
   visible: boolean;
   currentStrategyId: number | null;
   currentStrategyName: string;
+  bulkMode?: 'LIVE' | 'PAPER' | null;
   strategyList: StrategyConfig[];
   loading: boolean;
+  submitting?: boolean;
   onClose: () => void;
   onSelect: (strategy: StrategyConfig) => void;
 }) {
@@ -302,8 +301,10 @@ function StrategyChangeModal({
         <View style={modal.handle} />
         <View style={modal.header}>
           <View style={{ flex: 1 }}>
-            <Text style={modal.title}>전략 변경</Text>
-            <Text style={{ fontSize: 12, color: colors.textDim, marginTop: 4 }}>현재: {currentStrategyName}</Text>
+            <Text style={modal.title}>{bulkMode ? `전략 일괄 변경 (${bulkMode === 'LIVE' ? '실전' : '모의'})` : '전략 변경'}</Text>
+            <Text style={{ fontSize: 12, color: colors.textDim, marginTop: 4 }}>
+              {bulkMode ? `${bulkMode === 'LIVE' ? '실전' : '모의'} 세션 전체(실행중+중지됨)에 적용됩니다` : `현재: ${currentStrategyName}`}
+            </Text>
           </View>
           <TouchableOpacity onPress={onClose} style={modal.closeBtn}>
             <Text style={modal.closeText}>✕</Text>
@@ -323,7 +324,7 @@ function StrategyChangeModal({
                 return (
                   <TouchableOpacity
                     key={s.id}
-                    disabled={isCurrent}
+                    disabled={isCurrent || submitting}
                     onPress={() => onSelect(s)}
                     style={[modal.field, strategyPicker.row, isCurrent && strategyPicker.rowCurrent]}
                     activeOpacity={0.7}
@@ -365,14 +366,18 @@ export default function SessionsScreen() {
   const [capitalTarget, setCapitalTarget] = useState<TradingSession | null>(null);
   const [capitalSubmitting, setCapitalSubmitting] = useState(false);
   const [strategyChangeTarget, setStrategyChangeTarget] = useState<TradingSession | null>(null);
+  const [bulkStrategyMode, setBulkStrategyMode] = useState<'LIVE' | 'PAPER' | null>(null);
+  const [bulkStrategySubmitting, setBulkStrategySubmitting] = useState(false);
   const [strategyList, setStrategyList] = useState<StrategyConfig[]>([]);
   const [strategyListLoading, setStrategyListLoading] = useState(false);
+  const [isAdmin, setIsAdmin] = useState(false);
 
   const load = async (showLoader = true) => {
     if (showLoader) setLoading(true);
     const u = await authStorage.get();
-    const isAdmin = (u?.permission ?? 0) >= 99;
-    const userParams = isAdmin ? { userUid: u?.userUid, viewAll: true } : { userUid: u?.userUid };
+    const admin = (u?.permission ?? 0) >= 99;
+    setIsAdmin(admin);
+    const userParams = admin ? { userUid: u?.userUid, viewAll: true } : { userUid: u?.userUid };
     try {
       const sessionRes = await getTradingSessionList(userParams);
       if (sessionRes.status === 200) setSessions(sessionRes.data ?? []);
@@ -459,8 +464,7 @@ export default function SessionsScreen() {
     finally { setCapitalSubmitting(false); }
   };
 
-  const openStrategyChange = async (session: TradingSession) => {
-    setStrategyChangeTarget(session);
+  const loadStrategyListForModal = async () => {
     setStrategyListLoading(true);
     try {
       const u = await authStorage.get();
@@ -470,8 +474,60 @@ export default function SessionsScreen() {
     finally { setStrategyListLoading(false); }
   };
 
+  const openStrategyChange = (session: TradingSession) => {
+    setStrategyChangeTarget(session);
+    loadStrategyListForModal();
+  };
+
+  const openBulkStrategyChange = (mode: 'LIVE' | 'PAPER') => {
+    setBulkStrategyMode(mode);
+    loadStrategyListForModal();
+  };
+
+  const closeStrategyModal = () => {
+    setStrategyChangeTarget(null);
+    setBulkStrategyMode(null);
+  };
+
   const handleSelectStrategy = async (strategy: StrategyConfig) => {
-    if (!strategyChangeTarget || !strategy.id) return;
+    if (!strategy.id) return;
+    const strategyConfigPatch = {
+      id:                  strategy.id!,
+      name:                strategy.name,
+      takeProfitPct:       strategy.takeProfitPct,
+      stopLossPct:         strategy.stopLossPct,
+      pullbackMinPct:      strategy.pullbackMinPct,
+      pullbackMaxPct:      strategy.pullbackMaxPct,
+      buyingVolumeRatio:   strategy.buyingVolumeRatio,
+      stopLossVolumeRatio: strategy.stopLossVolumeRatio,
+      pullbackVolumeRatio: strategy.pullbackVolumeRatio,
+    };
+    if (bulkStrategyMode) {
+      const mode = bulkStrategyMode;
+      const u = await authStorage.get();
+      if (!u?.userUid) return;
+      setBulkStrategySubmitting(true);
+      try {
+        const res = await updateSessionStrategyConfigIdBulk({ userUid: u.userUid, mode, strategyConfigId: strategy.id });
+        if (res.status >= 400) {
+          Alert.alert('오류', res.message || '전략 일괄 변경에 실패했습니다.');
+          return;
+        }
+        setSessions(prev => prev.map(s => (s.mode === mode && s.userUid === u.userUid) ? {
+          ...s,
+          strategyConfigId: strategy.id!,
+          strategyConfig: strategyConfigPatch,
+        } : s));
+        closeStrategyModal();
+      } catch {
+        Alert.alert('오류', '전략 일괄 변경에 실패했습니다.');
+      } finally {
+        setBulkStrategySubmitting(false);
+      }
+      return;
+    }
+
+    if (!strategyChangeTarget) return;
     const sessionId = strategyChangeTarget.id;
     try {
       await updateSessionStrategyConfigId({ id: sessionId, strategyConfigId: strategy.id });
@@ -479,19 +535,9 @@ export default function SessionsScreen() {
       setSessions(prev => prev.map(s => s.id === sessionId ? {
         ...s,
         strategyConfigId: strategy.id!,
-        strategyConfig: {
-          id:                  strategy.id!,
-          name:                strategy.name,
-          takeProfitPct:       strategy.takeProfitPct,
-          stopLossPct:         strategy.stopLossPct,
-          pullbackMinPct:      strategy.pullbackMinPct,
-          pullbackMaxPct:      strategy.pullbackMaxPct,
-          buyingVolumeRatio:   strategy.buyingVolumeRatio,
-          stopLossVolumeRatio: strategy.stopLossVolumeRatio,
-          pullbackVolumeRatio: strategy.pullbackVolumeRatio,
-        },
+        strategyConfig: strategyConfigPatch,
       } : s));
-      setStrategyChangeTarget(null);
+      closeStrategyModal();
     } catch {
       Alert.alert('오류', '전략 변경에 실패했습니다.');
     }
@@ -555,21 +601,32 @@ export default function SessionsScreen() {
       </View>
 
       {/* 상태 필터 */}
-      <View style={styles.filterRow}>
-        {(['all', 'active', 'stopped'] as const).map(f => (
+      <View style={[styles.filterRow, { justifyContent: 'space-between' }]}>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          {(['all', 'active', 'stopped'] as const).map(f => (
+            <TouchableOpacity
+              key={f}
+              style={[styles.filterBtn, filter === f && styles.filterBtnActive]}
+              onPress={() => setFilter(f)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
+                {f === 'all'     ? `전체 ${modeFiltered.length}` :
+                 f === 'active'  ? `실행 중 ${modeFiltered.filter(s => s.active === 1).length}` :
+                                   `중지 ${modeFiltered.filter(s => s.active === 0).length}`}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        {!isAdmin && modeFiltered.length > 0 && (
           <TouchableOpacity
-            key={f}
-            style={[styles.filterBtn, filter === f && styles.filterBtnActive]}
-            onPress={() => setFilter(f)}
+            style={styles.filterBtn}
+            onPress={() => openBulkStrategyChange(modeTab === 'live' ? 'LIVE' : 'PAPER')}
             activeOpacity={0.7}
           >
-            <Text style={[styles.filterText, filter === f && styles.filterTextActive]}>
-              {f === 'all'     ? `전체 ${modeFiltered.length}` :
-               f === 'active'  ? `실행 중 ${modeFiltered.filter(s => s.active === 1).length}` :
-                                 `중지 ${modeFiltered.filter(s => s.active === 0).length}`}
-            </Text>
+            <Text style={styles.filterText}>전략 일괄변경</Text>
           </TouchableOpacity>
-        ))}
+        )}
       </View>
 
       <FlatList
@@ -618,12 +675,14 @@ export default function SessionsScreen() {
       />
 
       <StrategyChangeModal
-        visible={strategyChangeTarget != null}
+        visible={strategyChangeTarget != null || bulkStrategyMode != null}
         currentStrategyId={strategyChangeTarget?.strategyConfigId ?? null}
         currentStrategyName={strategyChangeTarget?.strategyConfig?.name || `전략 #${strategyChangeTarget?.strategyConfigId ?? '-'}`}
+        bulkMode={bulkStrategyMode}
         strategyList={strategyList}
         loading={strategyListLoading}
-        onClose={() => setStrategyChangeTarget(null)}
+        submitting={bulkStrategySubmitting}
+        onClose={closeStrategyModal}
         onSelect={handleSelectStrategy}
       />
     </View>

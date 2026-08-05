@@ -103,6 +103,8 @@ export interface StrategyConfig {
   adxThreshold?: number;              // ADX 추세강도 진입 게이트 문턱값 (미만이면 신규진입 차단, 청산엔 미적용)
   pullbackTrendMaDays?: number;       // 눌림목 일봉 추세 게이트 — N일 이동평균 (현재가가 이 위에 있어야 눌림목 인정)
   riskPerTradePct?: number;           // 트레이드당 리스크 상한 % (계좌총액 기준) — 손절 시 이 비율만 잃도록 매수금액을 ATR 기반으로 캡
+  gradeCutoffBullish?: number;        // 시장+종목 상대강도 필터 — 불타기 컷오프 (등급이 이보다 나쁘면 차단, 기본 12)
+  gradeCutoffPullback?: number;       // 시장+종목 상대강도 필터 — 눌림목 컷오프 (등급이 이보다 나쁘면 차단, 기본 14)
   createdAt?: string;
 }
 
@@ -154,6 +156,15 @@ export interface BacktestResult {
   strategyTitle?: string | null;
   createdAt: string;
   trades?: BacktestTrade[];
+}
+
+/** symbol_universe 테이블 매핑 (실전투자 종목 선택 리스트, 카테고리별) */
+export interface SymbolUniverse {
+  symbol:         string;
+  symbolName:     string;
+  category:       'KOSPI200' | 'NASDAQ100' | 'INDEX';
+  lastPrice:      number | null;
+  priceUpdatedAt: string | null;
 }
 
 export interface TradeHistory {

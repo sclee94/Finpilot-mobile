@@ -9,12 +9,9 @@ import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolio
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
-import { getSymbolName, SYMBOL_NAMES } from '../constants/symbolNames';
+import { getSymbolName } from '../constants/symbolNames';
+import SymbolPickerModal from '../components/SymbolPickerModal';
 import type { BacktestResult, BacktestTrade, StrategyConfig } from '../types';
-
-const KOSPI_SYMBOL_OPTIONS = Object.entries(SYMBOL_NAMES)
-  .filter(([sym]) => sym.endsWith('.KS') || sym.endsWith('.KQ'))
-  .map(([value, label]) => ({ value, label }));
 
 const RESULT_LABELS: Record<string, string> = {
   TP_THRESHOLD:    '즉시 익절',
@@ -127,47 +124,6 @@ function renderTradeCards(t: BacktestTrade, showSymbol: boolean): ReactNode[] {
     </View>
   );
   return cards;
-}
-
-function SymbolPickerModal({
-  visible, selected, onSelect, onClose,
-}: {
-  visible: boolean;
-  selected: string;
-  onSelect: (symbol: string) => void;
-  onClose: () => void;
-}) {
-  return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
-      <View style={detail.container}>
-        <View style={detail.handle} />
-        <View style={detail.header}>
-          <Text style={detail.title}>종목 선택</Text>
-          <TouchableOpacity onPress={onClose} style={detail.closeBtn}>
-            <Text style={detail.closeText}>✕</Text>
-          </TouchableOpacity>
-        </View>
-        <FlatList
-          data={KOSPI_SYMBOL_OPTIONS}
-          keyExtractor={item => item.value}
-          renderItem={({ item }) => {
-            const active = item.value === selected;
-            return (
-              <TouchableOpacity
-                style={[picker.row, active && picker.rowActive]}
-                onPress={() => { onSelect(item.value); onClose(); }}
-                activeOpacity={0.7}
-              >
-                <Text style={[picker.rowText, active && { color: colors.teal }]}>{item.label}</Text>
-                <Text style={picker.rowSymbol}>{item.value}</Text>
-              </TouchableOpacity>
-            );
-          }}
-          contentContainerStyle={{ padding: 12 }}
-        />
-      </View>
-    </Modal>
-  );
 }
 
 function BacktestDetailModal({
@@ -296,7 +252,6 @@ export default function BacktestScreen() {
   const [strategies,      setStrategies]      = useState<StrategyConfig[]>([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState<number | null>(null);
   const [runSymbol,       setRunSymbol]       = useState('');
-  const [showSymbolPicker, setShowSymbolPicker] = useState(false);
   const [loading,         setLoading]         = useState(true);
   const [refreshing,      setRefreshing]      = useState(false);
   const [selected,        setSelected]        = useState<BacktestResult | null>(null);
@@ -473,16 +428,7 @@ export default function BacktestScreen() {
 
         {backtestType === 'SYMBOL' ? (
           <>
-            <TouchableOpacity
-              style={styles.symbolBtn}
-              onPress={() => setShowSymbolPicker(true)}
-              activeOpacity={0.7}
-            >
-              <Text style={runSymbol ? styles.symbolBtnTextActive : styles.symbolBtnText}>
-                {runSymbol ? `${getSymbolName(runSymbol)} (${runSymbol})` : '종목을 선택하세요'}
-              </Text>
-              <Text style={styles.symbolBtnChevron}>▾</Text>
-            </TouchableOpacity>
+            <SymbolPickerModal value={runSymbol} onChange={(s) => setRunSymbol(s)} />
 
             {strategies.length === 0 ? (
               <Text style={styles.noStrategyText}>전략 탭에서 전략 설정을 먼저 등록하세요</Text>
@@ -557,13 +503,6 @@ export default function BacktestScreen() {
           )}
         </TouchableOpacity>
       </View>
-
-      <SymbolPickerModal
-        visible={showSymbolPicker}
-        selected={runSymbol}
-        onSelect={setRunSymbol}
-        onClose={() => setShowSymbolPicker(false)}
-      />
 
       <FlatList
         data={results}
@@ -688,14 +627,6 @@ const styles = StyleSheet.create({
   switchTrackOn:  { backgroundColor: colors.teal },
   switchThumb:    { width: 20, height: 20, borderRadius: 10, backgroundColor: '#fff' },
   switchThumbOn:  { transform: [{ translateX: 20 }] },
-  symbolBtn:      {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
-    borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12,
-  },
-  symbolBtnText:       { fontSize: 14, color: colors.textDim },
-  symbolBtnTextActive: { fontSize: 14, color: colors.text, fontWeight: '600' },
-  symbolBtnChevron:    { fontSize: 14, color: colors.textDim },
   stratChipRow:   { flexGrow: 0 },
   stratChip:      {
     backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim,
@@ -794,15 +725,4 @@ const detail = StyleSheet.create({
   tradeTime:    { fontSize: 11, color: colors.textDim, marginTop: 3 },
   tradePrice:   { fontSize: 11, color: colors.textDim, marginTop: 2 },
   tradeRet:     { fontSize: 14, fontWeight: '700' },
-});
-
-const picker = StyleSheet.create({
-  row:        {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    paddingHorizontal: 14, paddingVertical: 14,
-    borderBottomWidth: 1, borderBottomColor: colors.borderDim,
-  },
-  rowActive:  { backgroundColor: colors.tealDim },
-  rowText:    { fontSize: 14, color: colors.text, fontWeight: '500' },
-  rowSymbol:  { fontSize: 12, color: colors.textDim },
 });

@@ -20,39 +20,77 @@ type NumField = keyof Pick<StrategyConfig,
   'rsiOversold' | 'rsiOverbought' | 'rsiExitMinGainPct' |
   'scoreTakeProfitThreshold' | 'scoreStopLossThreshold' |
   'volBaselineCv' | 'volMultMin' | 'volMultMax' | 'stopLossCooldownMinutes' |
-  'adxPeriod' | 'adxThreshold' | 'pullbackTrendMaDays' | 'riskPerTradePct'>;
+  'adxPeriod' | 'adxThreshold' | 'pullbackTrendMaDays' | 'riskPerTradePct' |
+  'gradeCutoffBullish' | 'gradeCutoffPullback'>;
 
 // 4단계 파이프라인: 1차 필터(후보 자격 자체를 거름) → 2차 필터(스코어링 전 추세강도 게이트)
 // → 매수·매도 전략 1단계(즉시 판단) → 매수·매도 전략 2단계(패턴/RSI 정밀 스코어링)
 const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계'] as const;
 type Stage = typeof STAGE_ORDER[number];
 
-const CONFIG_FIELDS: { key: NumField; label: string; format: (v: number) => string; stage: Stage; disabled?: boolean }[] = [
+// 각 파라미터가 실제 전략 로직(kospi_strategy.py / api.py)의 매수 판단, 매도 판단,
+// 혹은 둘 다에 쓰이는지 구분 — 값을 고칠 때 어느 쪽에 영향을 주는지 색으로 한눈에 알 수 있게.
+type FieldCategory = 'buy' | 'sell' | 'common';
+
+const CATEGORY_STYLE: Record<FieldCategory, { label: string; color: string; dim: string }> = {
+  buy:    { label: '매수', color: colors.emerald, dim: colors.emeraldDim },
+  sell:   { label: '매도', color: colors.rose,    dim: colors.roseDim },
+  common: { label: '공통', color: colors.amber,   dim: colors.amberDim },
+};
+
+const CONFIG_FIELDS: { key: NumField; label: string; format: (v: number) => string; stage: Stage; disabled?: boolean; category: FieldCategory }[] = [
   // ── 1차 필터 ──────────────────────────────────────────
-  { key: 'buyingVolumeRatio',   stage: '1차 필터', label: '불타기 거래량 급증 확인 (현재 ≥ 평균 × 비율)', format: v => `${v}%` },
-  { key: 'pullbackMinPct',      stage: '1차 필터', label: '눌림목 최소 하락폭 (당일 고가 대비)', format: v => `${v}%` },
-  { key: 'pullbackMaxPct',      stage: '1차 필터', label: '눌림목 최대 하락폭 (당일 고가 대비)', format: v => `${v}%` },
-  { key: 'stopLossCooldownMinutes', stage: '1차 필터', label: '손절 후 재진입 쿨다운', format: v => `${v}분` },
-  { key: 'pullbackVolumeRatio', stage: '1차 필터', label: '눌림목 거래량 (미사용 — 값을 바꿔도 매매에 영향 없음)', format: v => `${v}%`, disabled: true },
+  { key: 'buyingVolumeRatio',   stage: '1차 필터', label: '불타기 거래량 급증 확인 (현재 ≥ 평균 × 비율)', format: v => `${v}%`, category: 'buy' },
+  { key: 'pullbackMinPct',      stage: '1차 필터', label: '눌림목 최소 하락폭 (당일 고가 대비)', format: v => `${v}%`, category: 'buy' },
+  { key: 'pullbackMaxPct',      stage: '1차 필터', label: '눌림목 최대 하락폭 (당일 고가 대비)', format: v => `${v}%`, category: 'buy' },
+  { key: 'stopLossCooldownMinutes', stage: '1차 필터', label: '손절 후 재진입 쿨다운', format: v => `${v}분`, category: 'buy' },
+  { key: 'pullbackVolumeRatio', stage: '1차 필터', label: '눌림목 거래량 (미사용 — 값을 바꿔도 매매에 영향 없음)', format: v => `${v}%`, disabled: true, category: 'buy' },
   // ── 2차 필터 ──────────────────────────────────────────
-  { key: 'adxPeriod',           stage: '2차 필터', label: 'ADX 계산 기간',            format: v => `${v}봉` },
-  { key: 'adxThreshold',        stage: '2차 필터', label: 'ADX 진입 게이트 문턱값',   format: v => `${v}` },
-  { key: 'pullbackTrendMaDays', stage: '2차 필터', label: '눌림목 일봉 추세 게이트 (N일 이평)', format: v => `${v}일` },
+  { key: 'adxPeriod',           stage: '2차 필터', label: 'ADX 계산 기간',            format: v => `${v}봉`, category: 'buy' },
+  { key: 'adxThreshold',        stage: '2차 필터', label: 'ADX 진입 게이트 문턱값',   format: v => `${v}`, category: 'buy' },
+  { key: 'pullbackTrendMaDays', stage: '2차 필터', label: '눌림목 일봉 추세 게이트 (N일 이평)', format: v => `${v}일`, category: 'buy' },
+  { key: 'gradeCutoffBullish',  stage: '2차 필터', label: '시장+종목 상대강도 컷오프 (불타기, 낮을수록 엄격)', format: v => `${v}`, category: 'buy' },
+  { key: 'gradeCutoffPullback', stage: '2차 필터', label: '시장+종목 상대강도 컷오프 (눌림목, 낮을수록 엄격)', format: v => `${v}`, category: 'buy' },
   // ── 매수·매도 전략 1단계 (즉시 판단) ─────────────────
-  { key: 'takeProfitPct', stage: '매수·매도 전략 1단계', label: '즉시 익절 / 추격매수 방지 기준', format: v => `+${v}%` },
-  { key: 'stopLossPct',   stage: '매수·매도 전략 1단계', label: '즉시 손절 기준 (매도)', format: v => `-${v}%` },
-  { key: 'riskPerTradePct', stage: '매수·매도 전략 1단계', label: '트레이드당 리스크 상한 (계좌 대비, 0=미적용)', format: v => `${v}%` },
-  { key: 'volBaselineCv', stage: '매수·매도 전략 1단계', label: '변동성 기준값 (ATR%)', format: v => `${v}` },
-  { key: 'volMultMin',    stage: '매수·매도 전략 1단계', label: '변동성 배수 하한',    format: v => `${v}배` },
-  { key: 'volMultMax',    stage: '매수·매도 전략 1단계', label: '변동성 배수 상한',    format: v => `${v}배` },
+  { key: 'takeProfitPct', stage: '매수·매도 전략 1단계', label: '즉시 익절 / 추격매수 방지 기준', format: v => `+${v}%`, category: 'common' },
+  { key: 'stopLossPct',   stage: '매수·매도 전략 1단계', label: '즉시 손절 기준 (매도)', format: v => `-${v}%`, category: 'sell' },
+  { key: 'riskPerTradePct', stage: '매수·매도 전략 1단계', label: '트레이드당 리스크 상한 (계좌 대비, 0=미적용)', format: v => `${v}%`, category: 'buy' },
+  { key: 'volBaselineCv', stage: '매수·매도 전략 1단계', label: '변동성 기준값 (ATR%)', format: v => `${v}`, category: 'common' },
+  { key: 'volMultMin',    stage: '매수·매도 전략 1단계', label: '변동성 배수 하한',    format: v => `${v}배`, category: 'common' },
+  { key: 'volMultMax',    stage: '매수·매도 전략 1단계', label: '변동성 배수 상한',    format: v => `${v}배`, category: 'common' },
   // ── 매수·매도 전략 2단계 (정밀 스코어링) ─────────────
-  { key: 'rsiOversold',              stage: '매수·매도 전략 2단계', label: '눌림목 과매도 기준 (RSI 14, 매수)', format: v => `${v}` },
-  { key: 'stopLossVolumeRatio',      stage: '매수·매도 전략 2단계', label: '손절 거래량 확인 (매도)', format: v => `${v}%` },
-  { key: 'rsiOverbought',            stage: '매수·매도 전략 2단계', label: 'RSI 과매수 기준 (매도)',  format: v => `${v}` },
-  { key: 'rsiExitMinGainPct',        stage: '매수·매도 전략 2단계', label: 'RSI 조기청산 최소 수익률 (매도)', format: v => `${v}%` },
-  { key: 'scoreTakeProfitThreshold', stage: '매수·매도 전략 2단계', label: '익절 스코어링 문턱값 (매도)', format: v => `${v}점` },
-  { key: 'scoreStopLossThreshold',   stage: '매수·매도 전략 2단계', label: '손절 스코어링 문턱값 (매도)', format: v => `${v}점` },
+  { key: 'rsiOversold',              stage: '매수·매도 전략 2단계', label: '눌림목 과매도 기준 (RSI 14, 매수)', format: v => `${v}`, category: 'buy' },
+  { key: 'stopLossVolumeRatio',      stage: '매수·매도 전략 2단계', label: '손절 거래량 확인 (매도)', format: v => `${v}%`, category: 'sell' },
+  { key: 'rsiOverbought',            stage: '매수·매도 전략 2단계', label: 'RSI 과매수 기준 (매도)',  format: v => `${v}`, category: 'sell' },
+  { key: 'rsiExitMinGainPct',        stage: '매수·매도 전략 2단계', label: 'RSI 조기청산 최소 수익률 (매도)', format: v => `${v}%`, category: 'sell' },
+  { key: 'scoreTakeProfitThreshold', stage: '매수·매도 전략 2단계', label: '익절 스코어링 문턱값 (매도)', format: v => `${v}점`, category: 'sell' },
+  { key: 'scoreStopLossThreshold',   stage: '매수·매도 전략 2단계', label: '손절 스코어링 문턱값 (매도)', format: v => `${v}점`, category: 'sell' },
 ];
+
+function CategoryBadge({ category }: { category: FieldCategory }) {
+  const s = CATEGORY_STYLE[category];
+  return (
+    <View style={[badgeStyles.badge, { backgroundColor: s.dim }]}>
+      <Text style={[badgeStyles.badgeText, { color: s.color }]}>{s.label}</Text>
+    </View>
+  );
+}
+
+function CategoryLegend() {
+  return (
+    <View style={badgeStyles.legend}>
+      <Text style={badgeStyles.legendLabel}>색상 안내</Text>
+      {(Object.keys(CATEGORY_STYLE) as FieldCategory[]).map(cat => (
+        <View key={cat} style={badgeStyles.legendItem}>
+          <CategoryBadge category={cat} />
+          <Text style={badgeStyles.legendDesc}>
+            {cat === 'buy' ? '매수만' : cat === 'sell' ? '매도만' : '매수+매도'}
+          </Text>
+        </View>
+      ))}
+    </View>
+  );
+}
 
 const MENU_TYPE_LABEL: Record<StrategyMenu['menuType'], string> = {
   BULLISH: '불타기 (상승 추세)',
@@ -131,6 +169,9 @@ function StrategyFormModal({
           </TouchableOpacity>
         </View>
         <ScrollView style={detail.scroll}>
+          <View style={{ marginHorizontal: 12, marginTop: 12 }}>
+            <CategoryLegend />
+          </View>
           <View style={detail.section}>
             <View style={detail.editRow}>
               <Text style={detail.rowLabel}>전략 이름</Text>
@@ -149,7 +190,10 @@ function StrategyFormModal({
               <Text style={detail.sectionHeading}>{stage}</Text>
               {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => (
                 <View key={f.key} style={detail.editRow}>
-                  <Text style={detail.rowLabel}>{f.label}</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                    <Text style={[detail.rowLabel, { marginBottom: 0 }]}>{f.label}</Text>
+                    <CategoryBadge category={f.category} />
+                  </View>
                   <TextInput
                     style={[detail.input, f.disabled && detail.inputDisabled]}
                     value={form[f.key]}
@@ -303,20 +347,26 @@ export default function StrategyScreen() {
         </View>
 
         {selected ? (
-          STAGE_ORDER.map(stage => (
-            <View key={stage} style={styles.card}>
-              <Text style={styles.cardHeading}>{stage}</Text>
-              {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => {
-                const v = selected[f.key];
-                return (
-                  <View key={f.key} style={styles.row}>
-                    <Text style={[styles.rowLabel, f.disabled && { opacity: 0.6 }]}>{f.label}</Text>
-                    <Text style={[styles.rowValue, f.disabled && { opacity: 0.6 }]}>{v != null ? f.format(v) : '—'}</Text>
-                  </View>
-                );
-              })}
-            </View>
-          ))
+          <>
+            <CategoryLegend />
+            {STAGE_ORDER.map(stage => (
+              <View key={stage} style={styles.card}>
+                <Text style={styles.cardHeading}>{stage}</Text>
+                {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => {
+                  const v = selected[f.key];
+                  return (
+                    <View key={f.key} style={styles.row}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, marginRight: 8 }}>
+                        <Text style={[styles.rowLabel, f.disabled && { opacity: 0.6 }, { marginRight: 0, flex: undefined }]}>{f.label}</Text>
+                        <CategoryBadge category={f.category} />
+                      </View>
+                      <Text style={[styles.rowValue, f.disabled && { opacity: 0.6 }]}>{v != null ? f.format(v) : '—'}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ))}
+          </>
         ) : (
           <View style={styles.empty}><Text style={styles.emptyText}>전략 설정이 없습니다</Text></View>
         )}
@@ -437,4 +487,17 @@ const detail = StyleSheet.create({
   footer:     { padding: 16, borderTopWidth: 1, borderTopColor: colors.borderDim },
   applyBtn:   { backgroundColor: colors.teal, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   applyText:  { color: '#0a1f1e', fontSize: 15, fontWeight: '700' },
+});
+
+const badgeStyles = StyleSheet.create({
+  badge:      { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, alignSelf: 'flex-start' },
+  badgeText:  { fontSize: 10, fontWeight: '700' },
+  legend:     {
+    flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 10,
+    paddingHorizontal: 12, paddingVertical: 10, marginBottom: 12,
+    backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.borderDim,
+  },
+  legendLabel: { fontSize: 11, color: colors.textDim, marginRight: 2 },
+  legendItem:  { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  legendDesc:  { fontSize: 11, color: colors.textSub },
 });
