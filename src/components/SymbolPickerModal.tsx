@@ -4,6 +4,13 @@ import { colors } from '../constants/colors';
 import { getSymbolsByCategory, SYMBOL_CATEGORIES, type SymbolCategory } from '../api/symbolApi';
 import type { SymbolUniverse } from '../types';
 
+/** 시가총액을 조/억 단위로 축약 표시 (원화·달러 공통 — 자릿수 크기로만 표현) */
+function formatMarketCap(marketCap: number): string {
+  if (marketCap >= 1e12) return `${(marketCap / 1e12).toFixed(1)}조`;
+  if (marketCap >= 1e8) return `${Math.round(marketCap / 1e8).toLocaleString()}억`;
+  return marketCap.toLocaleString();
+}
+
 /** 종목 선택 필드 — 탭하면 카테고리(코스피200/나스닥100/지수) → 종목 2단계 선택 모달이 뜸. DB 기반, 현재가 내림차순 정렬 */
 export default function SymbolPickerModal({
   value,
@@ -106,7 +113,9 @@ export default function SymbolPickerModal({
                   >
                     <View>
                       <Text style={styles.rowName}>{s.symbolName}</Text>
-                      <Text style={styles.rowCode}>{s.symbol}</Text>
+                      <Text style={styles.rowCode}>
+                        {s.symbol}{s.marketCap != null ? `  ·  시총 ${formatMarketCap(s.marketCap)}` : ''}
+                      </Text>
                     </View>
                     <Text style={styles.rowPrice}>
                       {s.lastPrice != null ? s.lastPrice.toLocaleString() : '—'}

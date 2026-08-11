@@ -25,3 +25,12 @@ export const runPortfolioBacktest = (params: {
   activeOnly: boolean;
 }) =>
   apiClient.post<ApiResponse<BacktestResult>>('/finpilot/backtest/portfolio/run', params);
+
+/** 랜덤 종목 백테스트 실행 — 카테고리(코스피200/나스닥100) 안에서 무작위 20종목에 단일 전략 일괄적용 */
+export const runRandomBacktest = (params: {
+  userUid: string;
+  category: 'KOSPI200' | 'NASDAQ100';
+  strategyConfigId: number;
+  applyForceClose: boolean;
+}) =>
+  apiClient.post<ApiResponse<BacktestResult>>('/finpilot/backtest/random/run', params);

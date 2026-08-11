@@ -5,7 +5,7 @@ import {
   RefreshControl, ActivityIndicator, Alert, Modal, ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolioBacktest } from '../api/backtestApi';
+import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolioBacktest, runRandomBacktest } from '../api/backtestApi';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
@@ -32,14 +32,14 @@ function resultColorOf(result: string): string {
   return colors.textDim;
 }
 
-// 포트폴리오(세션 목록) 백테스트 결과는 symbol 컬럼에 "PORTFOLIO(N종목)" 요약 라벨이 저장됨
-// — 개별 종목이 아니므로 getSymbolName()으로 풀어쓰지 않고 그대로 보여준다.
-function isPortfolioResult(symbol: string): boolean {
-  return symbol.startsWith('PORTFOLIO(');
+// 포트폴리오(세션 목록)/랜덤종목 백테스트 결과는 symbol 컬럼에 "PORTFOLIO(N종목)"/"RANDOM(카테고리,N종목)"
+// 요약 라벨이 저장됨 — 개별 종목이 아니므로 getSymbolName()으로 풀어쓰지 않고 그대로 보여준다.
+function isAggregateResult(symbol: string): boolean {
+  return symbol.startsWith('PORTFOLIO(') || symbol.startsWith('RANDOM(');
 }
 
 function symbolLabelOf(symbol: string): string {
-  return isPortfolioResult(symbol) ? symbol : `${getSymbolName(symbol)} (${symbol})`;
+  return isAggregateResult(symbol) ? symbol : `${getSymbolName(symbol)} (${symbol})`;
 }
 
 interface BuyEvent {
@@ -258,9 +258,11 @@ export default function BacktestScreen() {
   const [detailLoading,   setDetailLoading]   = useState(false);
   const [running,         setRunning]         = useState(false);
   const [elapsed,         setElapsed]         = useState(0);
-  const [backtestType,     setBacktestType]     = useState<'SYMBOL' | 'PORTFOLIO'>('SYMBOL');
+  const [backtestType,     setBacktestType]     = useState<'SYMBOL' | 'PORTFOLIO' | 'RANDOM'>('SYMBOL');
   const [portfolioRunMode, setPortfolioRunMode] = useState<'LIVE' | 'PAPER'>('PAPER');
   const [activeOnly,       setActiveOnly]       = useState(true);
+  const [randomCategory,         setRandomCategory]         = useState<'KOSPI200' | 'NASDAQ100'>('KOSPI200');
+  const [randomApplyForceClose,  setRandomApplyForceClose]  = useState(true);
   const [resultsPage,     setResultsPage]     = useState(1);
   const [resultsHasNext,  setResultsHasNext]  = useState(false);
   const [loadingMore,     setLoadingMore]     = useState(false);
@@ -367,6 +369,33 @@ export default function BacktestScreen() {
     }
   };
 
+  const handleRunRandom = async () => {
+    if (!selectedStrategyId || running) return;
+    const u = await authStorage.get();
+    if (!u?.userUid) return;
+    setRunning(true);
+    setElapsed(0);
+    timerRef.current = setInterval(() => setElapsed(p => p + 1), 1000);
+    try {
+      const res = await runRandomBacktest({
+        userUid:           u.userUid,
+        category:          randomCategory,
+        strategyConfigId:  selectedStrategyId,
+        applyForceClose:   randomApplyForceClose,
+      });
+      if (res.data) {
+        setResults(prev => [res.data, ...prev]);
+      } else {
+        Alert.alert('실패', res.message || '백테스트 실행에 실패했습니다.');
+      }
+    } catch {
+      Alert.alert('오류', '서버 연결에 실패했습니다.');
+    } finally {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      setRunning(false);
+    }
+  };
+
   const handleResultPress = async (result: BacktestResult) => {
     const u = await authStorage.get();
     setDetailLoading(true);
@@ -404,23 +433,45 @@ export default function BacktestScreen() {
     <View style={styles.center}><ActivityIndicator color={colors.teal} size="large" /></View>
   );
 
+  const strategyChips = strategies.length === 0 ? (
+    <Text style={styles.noStrategyText}>전략 탭에서 전략 설정을 먼저 등록하세요</Text>
+  ) : (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.stratChipRow} contentContainerStyle={{ gap: 8 }}>
+      {strategies.map(s => {
+        const active = s.id === selectedStrategyId;
+        return (
+          <TouchableOpacity
+            key={s.id}
+            onPress={() => setSelectedStrategyId(s.id!)}
+            style={[styles.stratChip, active && styles.stratChipActive]}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.stratChipText, active && { color: colors.teal }]} numberOfLines={1}>
+              {s.name || `전략 #${s.id}`}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+
   return (
     <View style={styles.container}>
       {/* 종목/전략 선택 + 실행 */}
       <View style={styles.runBox}>
         <Text style={styles.runBoxLabel}>실전투자와 동일한 전략 로직으로 최근 60일치 데이터를 검증합니다</Text>
 
-        {/* 백테스트 방식: 특정 종목 1개 vs 세션 목록 전체(포트폴리오) */}
+        {/* 백테스트 방식: 특정 종목 1개 vs 세션 목록 전체(포트폴리오) vs 카테고리 내 랜덤 20종목 */}
         <View style={styles.typeTabRow}>
-          {(['SYMBOL', 'PORTFOLIO'] as const).map(t => (
+          {(['SYMBOL', 'PORTFOLIO', 'RANDOM'] as const).map(t => (
             <TouchableOpacity
               key={t}
               style={[styles.typeTab, backtestType === t && styles.typeTabActive]}
               onPress={() => setBacktestType(t)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.typeTabText, backtestType === t && styles.typeTabTextActive]}>
-                {t === 'SYMBOL' ? '특정 종목' : '세션 종목 (포트폴리오)'}
+              <Text style={[styles.typeTabText, backtestType === t && styles.typeTabTextActive]} numberOfLines={1}>
+                {t === 'SYMBOL' ? '특정 종목' : t === 'PORTFOLIO' ? '세션 종목' : '랜덤 종목'}
               </Text>
             </TouchableOpacity>
           ))}
@@ -429,30 +480,9 @@ export default function BacktestScreen() {
         {backtestType === 'SYMBOL' ? (
           <>
             <SymbolPickerModal value={runSymbol} onChange={(s) => setRunSymbol(s)} />
-
-            {strategies.length === 0 ? (
-              <Text style={styles.noStrategyText}>전략 탭에서 전략 설정을 먼저 등록하세요</Text>
-            ) : (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.stratChipRow} contentContainerStyle={{ gap: 8 }}>
-                {strategies.map(s => {
-                  const active = s.id === selectedStrategyId;
-                  return (
-                    <TouchableOpacity
-                      key={s.id}
-                      onPress={() => setSelectedStrategyId(s.id!)}
-                      style={[styles.stratChip, active && styles.stratChipActive]}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={[styles.stratChipText, active && { color: colors.teal }]} numberOfLines={1}>
-                        {s.name || `전략 #${s.id}`}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            )}
+            {strategyChips}
           </>
-        ) : (
+        ) : backtestType === 'PORTFOLIO' ? (
           <>
             <Text style={styles.noStrategyText}>
               보유 세션 종목 전체를 실전/모의투자와 동일하게(Top2 필터, 세션별 전략, KIS 실잔고 시드머니) 동시 시뮬레이션합니다
@@ -482,15 +512,52 @@ export default function BacktestScreen() {
               </View>
             </TouchableOpacity>
           </>
+        ) : (
+          <>
+            <Text style={styles.noStrategyText}>
+              선택한 카테고리 안에서 무작위 20종목에 한 전략을 일괄 적용해 포트폴리오처럼 동시 시뮬레이션합니다
+            </Text>
+            <View style={styles.modeRow}>
+              {([{ id: 'KOSPI200', label: '코스피200' }, { id: 'NASDAQ100', label: '나스닥100' }] as const).map(c => (
+                <TouchableOpacity
+                  key={c.id}
+                  style={[styles.modeBtn, randomCategory === c.id && styles.modeBtnLive]}
+                  onPress={() => setRandomCategory(c.id)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.modeBtnText, { color: randomCategory === c.id ? colors.amber : colors.textDim }]}>
+                    {c.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <TouchableOpacity
+              style={styles.activeOnlyRow}
+              onPress={() => setRandomApplyForceClose(v => !v)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.activeOnlyText}>15:18 강제청산 {randomApplyForceClose ? '적용함' : '적용 안 함(이월)'}</Text>
+              <View style={[styles.switchTrack, randomApplyForceClose && styles.switchTrackOn]}>
+                <View style={[styles.switchThumb, randomApplyForceClose && styles.switchThumbOn]} />
+              </View>
+            </TouchableOpacity>
+            {strategyChips}
+          </>
         )}
 
         <TouchableOpacity
           style={[
             styles.runBtnFull,
-            (backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) : running) && styles.runBtnDisabled,
+            (backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
+             backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
+             running) && styles.runBtnDisabled,
           ]}
-          onPress={backtestType === 'SYMBOL' ? handleRun : handleRunPortfolio}
-          disabled={backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) : running}
+          onPress={backtestType === 'SYMBOL' ? handleRun : backtestType === 'PORTFOLIO' ? handleRunPortfolio : handleRunRandom}
+          disabled={
+            backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
+            backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
+            running
+          }
           activeOpacity={0.8}
         >
           {running ? (

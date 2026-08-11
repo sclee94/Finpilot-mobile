@@ -18,11 +18,12 @@ import {
   updateSessionStrategyConfigIdBulk,
 } from '../api/tradeApi';
 import { getStrategyConfigList } from '../api/strategyApi';
+import { getScreenerRecommendations } from '../api/screenerApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
 import { getSymbolName } from '../constants/symbolNames';
 import SymbolPickerModal from '../components/SymbolPickerModal';
-import type { TradingSession, StrategyConfig } from '../types';
+import type { TradingSession, StrategyConfig, ScreenerResult, ScreenerRecommendation } from '../types';
 
 function SessionCard({
   session,
@@ -347,6 +348,205 @@ function StrategyChangeModal({
   );
 }
 
+function ScreenerModal({
+  visible,
+  defaultMode,
+  onClose,
+  onAdded,
+}: {
+  visible: boolean;
+  defaultMode: 'LIVE' | 'PAPER';
+  onClose: () => void;
+  onAdded: (session: TradingSession) => void;
+}) {
+  const [limit, setLimit]     = useState('20');
+  const [loading, setLoading] = useState(false);
+  const [error, setError]     = useState('');
+  const [result, setResult]   = useState<ScreenerResult | null>(null);
+  const [addingSymbol, setAddingSymbol] = useState<string | null>(null);
+  const [addedSymbols, setAddedSymbols] = useState<Set<string>>(new Set());
+
+  const reset = () => {
+    setLimit('20'); setLoading(false); setError(''); setResult(null);
+    setAddingSymbol(null); setAddedSymbols(new Set());
+  };
+  const handleClose = () => { reset(); onClose(); };
+
+  const handleScan = async () => {
+    const u = await authStorage.get();
+    if (!u?.userUid || loading) return;
+    setLoading(true);
+    setError('');
+    setResult(null);
+    try {
+      const strategyRes = await getStrategyConfigList();
+      const strategyConfigId = strategyRes.data?.content?.[0]?.id ?? null;
+      if (!strategyConfigId) { setError('적용 가능한 전략 설정을 찾을 수 없습니다.'); return; }
+
+      const n = Math.max(5, Math.min(100, parseInt(limit, 10) || 20));
+      const res = await getScreenerRecommendations({
+        userUid: u.userUid,
+        category: 'KOSPI200',
+        strategyConfigId,
+        isLive: defaultMode === 'LIVE',
+        limit: n,
+      });
+      if (res.data) {
+        setResult(res.data);
+        setAddedSymbols(new Set());
+      } else {
+        setError(res.message || '추천 조회에 실패했습니다.');
+      }
+    } catch {
+      setError('서버 연결에 실패했습니다. 스캔 종목 수를 줄여서 다시 시도해보세요.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // strategyConfigId는 백엔드가 방향별로 이미 정해서 내려준 값을 그대로 쓴다(평균회귀는
+  // 전용 TP0.6/SL1.5 전략에 반드시 연결돼야 신호가 검증된 그대로 동작함 — 재조회해서
+  // 임의의 기본전략으로 덮어쓰면 안 됨).
+  const handleAdd = async (rec: ScreenerRecommendation) => {
+    const u = await authStorage.get();
+    if (!u?.userUid || addingSymbol) return;
+    const key = `${rec.symbol}:${rec.direction}`;
+    setAddingSymbol(key);
+    try {
+      const res = await insertTradingSession({
+        userUid: u.userUid,
+        symbol: rec.symbol,
+        mode: defaultMode,
+        strategyConfigId: rec.strategyConfigId,
+      });
+      if (res.data) {
+        setAddedSymbols(prev => new Set(prev).add(key));
+        onAdded(res.data);
+      } else {
+        Alert.alert('오류', res.message || '세션 추가에 실패했습니다.');
+      }
+    } catch {
+      Alert.alert('오류', '서버 연결에 실패했습니다.');
+    } finally {
+      setAddingSymbol(null);
+    }
+  };
+
+  return (
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
+      <View style={modal.container}>
+        <View style={modal.handle} />
+        <View style={modal.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={modal.title}>종목 추천받기</Text>
+            <Text style={{ fontSize: 12, color: colors.textDim, marginTop: 4 }}>
+              코스피200 · {defaultMode === 'LIVE' ? '실전' : '모의'} 기준 스캔 (읽기전용, 자동매매 아님)
+            </Text>
+          </View>
+          <TouchableOpacity onPress={handleClose} style={modal.closeBtn}>
+            <Text style={modal.closeText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView style={modal.scroll} keyboardShouldPersistTaps="handled">
+          <View style={modal.field}>
+            <Text style={modal.label}>스캔 종목 수 (시가총액 상위 순, 5~100)</Text>
+            <TextInput
+              style={modal.input}
+              value={limit}
+              onChangeText={setLimit}
+              keyboardType="number-pad"
+              placeholder="20"
+              placeholderTextColor={colors.textDim}
+            />
+          </View>
+
+          <TouchableOpacity style={modal.submitBtn} onPress={handleScan} disabled={loading} activeOpacity={0.8}>
+            {loading ? <ActivityIndicator color={colors.bg} /> : <Text style={modal.submitText}>스캔하기 (몇 분 걸릴 수 있어요)</Text>}
+          </TouchableOpacity>
+
+          {error !== '' && <Text style={[modal.hint, { color: colors.rose }]}>{error}</Text>}
+
+          {result && (
+            <View style={{ marginTop: 8 }}>
+              <Text style={modal.hint}>
+                {result.scannedCount}종목 스캔 · {result.recommendations.length}건 추천
+                {result.skippedNoDataCount > 0 ? ` · ${result.skippedNoDataCount}건 데이터 부족 제외` : ''}
+              </Text>
+              {result.recommendations.length === 0 ? (
+                <Text style={[modal.hint, { marginTop: 16 }]}>지금 조건을 만족하는 종목이 없습니다.</Text>
+              ) : (
+                [...result.recommendations]
+                  .sort((a, b) => Number(b.validated) - Number(a.validated))  // 검증된 평균회귀를 위로
+                  .map(rec => {
+                  const key = `${rec.symbol}:${rec.direction}`;
+                  const added = addedSymbols.has(key);
+                  const dirLabel = rec.direction === 'BULLISH' ? '불타기' : rec.direction === 'PULLBACK' ? '눌림목' : '평균회귀';
+                  const dirStyle = rec.direction === 'BULLISH' ? screener.dirBullish
+                    : rec.direction === 'PULLBACK' ? screener.dirPullback : screener.dirMeanrevert;
+                  const dirColor = rec.direction === 'BULLISH' ? colors.teal
+                    : rec.direction === 'PULLBACK' ? colors.blue : colors.amber;
+                  return (
+                    <View key={key} style={screener.row}>
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <View style={[screener.dirBadge, dirStyle]}>
+                            <Text style={[screener.dirText, { color: dirColor }]}>{dirLabel}</Text>
+                          </View>
+                          <Text style={[screener.validatedTag, { color: rec.validated ? colors.amber : colors.textDim }]}>
+                            {rec.validated ? '검증됨' : '참고용'}
+                          </Text>
+                          <Text style={screener.name} numberOfLines={1}>{rec.symbolName ?? rec.symbol}</Text>
+                        </View>
+                        <Text style={screener.detail} numberOfLines={1}>
+                          {rec.symbol} · {rec.currentPrice.toLocaleString()}원
+                          {rec.marketGrade != null ? ` · 상대강도 ${rec.marketGrade}등급` : ''}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[screener.addBtn, (added || rec.strategyConfigId == null) && screener.addBtnDone]}
+                        onPress={() => handleAdd(rec)}
+                        disabled={added || addingSymbol === key || rec.strategyConfigId == null}
+                        activeOpacity={0.75}
+                      >
+                        {addingSymbol === key
+                          ? <ActivityIndicator color={colors.bg} size="small" />
+                          : <Text style={[screener.addBtnText, (added || rec.strategyConfigId == null) && screener.addBtnTextDone]}>
+                              {added ? '추가됨' : '추가'}
+                            </Text>}
+                      </TouchableOpacity>
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          )}
+        </ScrollView>
+      </View>
+    </Modal>
+  );
+}
+
+const screener = StyleSheet.create({
+  row: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    borderWidth: 1, borderColor: colors.borderDim, borderRadius: 12,
+    backgroundColor: colors.bg, padding: 12, marginBottom: 8, gap: 10,
+  },
+  dirBadge:       { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
+  dirBullish:     { backgroundColor: colors.tealDim },
+  dirPullback:    { backgroundColor: colors.blueDim },
+  dirMeanrevert:  { backgroundColor: colors.amberDim },
+  dirText:        { fontSize: 11, fontWeight: '700' },
+  validatedTag:   { fontSize: 10, fontWeight: '700' },
+  name:           { fontSize: 14, fontWeight: '700', color: colors.text, flexShrink: 1 },
+  detail:         { fontSize: 12, color: colors.textDim, marginTop: 4 },
+  addBtn:         { backgroundColor: colors.teal, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9, minWidth: 64, alignItems: 'center' },
+  addBtnDone:     { backgroundColor: colors.surfaceAlt },
+  addBtnText:     { color: colors.bg, fontSize: 13, fontWeight: '700' },
+  addBtnTextDone: { color: colors.textDim },
+});
+
 const strategyPicker = StyleSheet.create({
   row:         { borderWidth: 1, borderColor: colors.borderDim, borderRadius: 12, backgroundColor: colors.bg },
   rowCurrent:  { opacity: 0.5, borderColor: colors.amber },
@@ -362,6 +562,7 @@ export default function SessionsScreen() {
   const [modeTab,    setModeTab]    = useState<'live' | 'paper'>('live');
   const [filter,     setFilter]     = useState<'all' | 'active' | 'stopped'>('all');
   const [showCreate, setShowCreate] = useState(false);
+  const [showScreener, setShowScreener] = useState(false);
   const [syncingId,  setSyncingId]  = useState<string | null>(null);
   const [capitalTarget, setCapitalTarget] = useState<TradingSession | null>(null);
   const [capitalSubmitting, setCapitalSubmitting] = useState(false);
@@ -656,7 +857,12 @@ export default function SessionsScreen() {
         }
       />
 
-      {/* FAB - 세션 생성 */}
+      {/* FAB - 종목 추천받기 (읽기전용 스캔, 자동매매와 분리) / 세션 생성 */}
+      {!isAdmin && (
+        <TouchableOpacity style={styles.fabSecondary} onPress={() => setShowScreener(true)} activeOpacity={0.85}>
+          <Text style={styles.fabSecondaryText}>추천</Text>
+        </TouchableOpacity>
+      )}
       <TouchableOpacity style={styles.fab} onPress={() => setShowCreate(true)} activeOpacity={0.85}>
         <Text style={styles.fabText}>+</Text>
       </TouchableOpacity>
@@ -665,6 +871,13 @@ export default function SessionsScreen() {
         visible={showCreate}
         onClose={() => setShowCreate(false)}
         onSubmit={handleCreate}
+      />
+
+      <ScreenerModal
+        visible={showScreener}
+        defaultMode={modeTab === 'live' ? 'LIVE' : 'PAPER'}
+        onClose={() => setShowScreener(false)}
+        onAdded={(session) => setSessions(prev => [session, ...prev])}
       />
 
       <AdjustCapitalModal
@@ -756,6 +969,15 @@ const styles = StyleSheet.create({
     elevation: 8,
   },
   fabText: { fontSize: 28, color: colors.bg, fontWeight: '300', marginTop: -2 },
+  fabSecondary: {
+    position: 'absolute', bottom: 24, right: 84,
+    height: 52, paddingHorizontal: 18, borderRadius: 26,
+    backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.teal,
+    alignItems: 'center', justifyContent: 'center',
+    shadowColor: colors.teal, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8,
+    elevation: 8,
+  },
+  fabSecondaryText: { fontSize: 15, color: colors.teal, fontWeight: '700' },
 });
 
 const modal = StyleSheet.create({

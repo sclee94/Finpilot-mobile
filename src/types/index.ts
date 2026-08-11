@@ -164,6 +164,7 @@ export interface SymbolUniverse {
   symbolName:     string;
   category:       'KOSPI200' | 'NASDAQ100' | 'INDEX';
   lastPrice:      number | null;
+  marketCap:      number | null;
   priceUpdatedAt: string | null;
 }
 
@@ -192,4 +193,27 @@ export interface TradeHistory {
   menuGrade: number | null;
   createdAt: string;
   userName?: string | null;
+}
+
+/**
+ * 종목 추천(스크리너) — POST /api/screener/recommend 응답.
+ * 자동매매와 분리된 읽기전용 기능(trading_session 미생성) — "추가" 액션을 눌러야만
+ * insertTradingSession으로 이어짐.
+ */
+export interface ScreenerRecommendation {
+  symbol: string;
+  symbolName: string | null;
+  direction: 'BULLISH' | 'PULLBACK' | 'MEANREVERT';
+  currentPrice: number;
+  patternGrade: number | null;  // 패턴 점수 등급(1~2, strategy_menu 매칭용) — MEANREVERT는 항상 null
+  patternScore: number | null;
+  marketGrade: number | null;   // 시장+종목 상대강도 등급(1~15, 낮을수록 좋음) — MEANREVERT는 항상 null
+  validated: boolean;           // true=평균회귀(research/holdout 검증됨) / false=불타기·눌림목(참고용, 방향예측력 미검증)
+  strategyConfigId: number | null;  // "추가" 시 이 ID를 그대로 써야 함(방향별로 다른 전략에 연결됨)
+}
+
+export interface ScreenerResult {
+  scannedCount: number;
+  skippedNoDataCount: number;
+  recommendations: ScreenerRecommendation[];
 }
