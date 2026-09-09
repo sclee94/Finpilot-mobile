@@ -21,11 +21,12 @@ type NumField = keyof Pick<StrategyConfig,
   'scoreTakeProfitThreshold' | 'scoreStopLossThreshold' |
   'volBaselineCv' | 'volMultMin' | 'volMultMax' | 'stopLossCooldownMinutes' |
   'adxPeriod' | 'adxThreshold' | 'pullbackTrendMaDays' | 'riskPerTradePct' |
-  'gradeCutoffBullish' | 'gradeCutoffPullback'>;
+  'gradeCutoffBullish' | 'gradeCutoffPullback' | 'dayLowBufferPct'>;
 
 // 4단계 파이프라인: 1차 필터(후보 자격 자체를 거름) → 2차 필터(스코어링 전 추세강도 게이트)
 // → 매수·매도 전략 1단계(즉시 판단) → 매수·매도 전략 2단계(패턴/RSI 정밀 스코어링)
-const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계'] as const;
+// → 당일 저점 매수(기존 불타기/눌림목과 완전히 별개로 병행 동작하는 독립 신호, ON/OFF 토글)
+const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계', '당일 저점 매수'] as const;
 type Stage = typeof STAGE_ORDER[number];
 
 // 각 파라미터가 실제 전략 로직(kospi_strategy.py / api.py)의 매수 판단, 매도 판단,
@@ -65,6 +66,8 @@ const CONFIG_FIELDS: { key: NumField; label: string; format: (v: number) => stri
   { key: 'rsiExitMinGainPct',        stage: '매수·매도 전략 2단계', label: 'RSI 조기청산 최소 수익률 (매도)', format: v => `${v}%`, category: 'sell' },
   { key: 'scoreTakeProfitThreshold', stage: '매수·매도 전략 2단계', label: '익절 스코어링 문턱값 (매도)', format: v => `${v}점`, category: 'sell' },
   { key: 'scoreStopLossThreshold',   stage: '매수·매도 전략 2단계', label: '손절 스코어링 문턱값 (매도)', format: v => `${v}점`, category: 'sell' },
+  // ── 당일 저점 매수 (독립 전략, ON일 때만 의미 있음) ──
+  { key: 'dayLowBufferPct', stage: '당일 저점 매수', label: '당일 저가 대비 허용 오차 (0=정확히 같을 때만)', format: v => `${v}%`, category: 'buy' },
 ];
 
 function CategoryBadge({ category }: { category: FieldCategory }) {
@@ -95,6 +98,7 @@ function CategoryLegend() {
 const MENU_TYPE_LABEL: Record<StrategyMenu['menuType'], string> = {
   BULLISH: '불타기 (상승 추세)',
   PULLBACK: '눌림목 (하락 후 반등)',
+  DAYLOW: '당일 저점 매수',
   TAKE_PROFIT: '익절 (매도 판단)',
   STOP_LOSS: '손절 (매도 판단)',
 };
@@ -123,13 +127,18 @@ function StrategyFormModal({
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [form, setForm] = useState<Record<NumField, string>>(() =>
-    Object.fromEntries(CONFIG_FIELDS.map(f => [f.key, String(initial?.[f.key] ?? '')])) as Record<NumField, string>);
+    Object.fromEntries(CONFIG_FIELDS.map(f => [f.key, String(initial?.[f.key] ?? (f.key === 'dayLowBufferPct' ? 0 : ''))])) as Record<NumField, string>);
+  const [enableDayLowBuy, setEnableDayLowBuy] = useState(initial?.enableDayLowBuy === 1);
+  const [dayLowRequireRsiOversold, setDayLowRequireRsiOversold] = useState(initial?.dayLowRequireRsiOversold === 1);
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
     if (saving) return;
     if (!name.trim()) { Alert.alert('입력 오류', '전략 이름을 입력해주세요.'); return; }
-    const payload: Record<string, number> = {};
+    const payload: Record<string, number> = {
+      enableDayLowBuy: enableDayLowBuy ? 1 : 0,
+      dayLowRequireRsiOversold: dayLowRequireRsiOversold ? 1 : 0,
+    };
     for (const f of CONFIG_FIELDS) {
       const n = parseFloat(form[f.key]);
       if (f.disabled) {
@@ -188,6 +197,32 @@ function StrategyFormModal({
           {STAGE_ORDER.map(stage => (
             <View key={stage} style={detail.section}>
               <Text style={detail.sectionHeading}>{stage}</Text>
+              {stage === '당일 저점 매수' && (
+                <View style={detail.editRow}>
+                  <Text style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>
+                    ON이면 기존 불타기/눌림목과 함께 평가됩니다. 같은 틱에 불타기/눌림목이 먼저 진입하면 당일저점은
+                    취소됩니다(우선순위: 불타기&gt;눌림목&gt;당일저점). 13:00 이전이거나 시장 전체가 나쁜 날엔 자동 차단됩니다.
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => setEnableDayLowBuy(v => !v)}
+                    style={[toggleStyles.pill, enableDayLowBuy ? toggleStyles.pillOn : toggleStyles.pillOff, { marginBottom: 8 }]}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[toggleStyles.pillText, { color: enableDayLowBuy ? colors.teal : colors.textDim }]}>
+                      당일 저점 매수 {enableDayLowBuy ? 'ON' : 'OFF'}
+                    </Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setDayLowRequireRsiOversold(v => !v)}
+                    style={[toggleStyles.pill, dayLowRequireRsiOversold ? toggleStyles.pillOn : toggleStyles.pillOff]}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[toggleStyles.pillText, { color: dayLowRequireRsiOversold ? colors.teal : colors.textDim }]}>
+                      RSI 과매도 조건 추가 요구 {dayLowRequireRsiOversold ? 'ON' : 'OFF'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
               {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => (
                 <View key={f.key} style={detail.editRow}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 6 }}>
@@ -303,7 +338,7 @@ export default function StrategyScreen() {
           </TouchableOpacity>
         </View>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipRow} contentContainerStyle={styles.chipRowContent}>
+        <View style={styles.chipList}>
           {strategies.map(s => {
             const active = s.id === selectedId;
             const mine   = !!myUid && s.userUid === myUid;
@@ -314,12 +349,14 @@ export default function StrategyScreen() {
                 style={[styles.chip, active && styles.chipActive]}
                 activeOpacity={0.8}
               >
-                <View style={[styles.chipBadge, s.isPublic === 1 ? styles.chipBadgePublic : styles.chipBadgeMine]}>
-                  <Text style={[styles.chipBadgeText, { color: s.isPublic === 1 ? colors.amber : colors.textDim }]}>
-                    {s.isPublic === 1 ? '추천' : mine ? '내 전략' : '전략'}
-                  </Text>
+                <View style={styles.chipTopRow}>
+                  <View style={[styles.chipBadge, s.isPublic === 1 ? styles.chipBadgePublic : styles.chipBadgeMine]}>
+                    <Text style={[styles.chipBadgeText, { color: s.isPublic === 1 ? colors.amber : colors.textDim }]}>
+                      {s.isPublic === 1 ? '추천' : mine ? '내 전략' : '전략'}
+                    </Text>
+                  </View>
+                  <Text style={[styles.chipTitle, active && { color: colors.teal }]} numberOfLines={1}>{s.name || `전략 #${s.id}`}</Text>
                 </View>
-                <Text style={[styles.chipTitle, active && { color: colors.teal }]} numberOfLines={1}>{s.name || `전략 #${s.id}`}</Text>
                 <Text style={styles.chipSub}>익절 +{s.takeProfitPct}% · 손절 -{s.stopLossPct}%</Text>
               </TouchableOpacity>
             );
@@ -327,7 +364,7 @@ export default function StrategyScreen() {
           {strategies.length === 0 && (
             <Text style={{ color: colors.textDim, fontSize: 13, paddingVertical: 12 }}>전략이 없습니다</Text>
           )}
-        </ScrollView>
+        </View>
 
         {/* 선택된 전략 상세 */}
         <View style={[styles.sectionHeader, { marginTop: 16 }]}>
@@ -352,6 +389,22 @@ export default function StrategyScreen() {
             {STAGE_ORDER.map(stage => (
               <View key={stage} style={styles.card}>
                 <Text style={styles.cardHeading}>{stage}</Text>
+                {stage === '당일 저점 매수' && (
+                  <>
+                    <View style={styles.row}>
+                      <Text style={styles.rowLabel}>ON/OFF</Text>
+                      <Text style={[styles.rowValue, { color: selected.enableDayLowBuy === 1 ? colors.teal : colors.textDim }]}>
+                        {selected.enableDayLowBuy === 1 ? 'ON' : 'OFF'}
+                      </Text>
+                    </View>
+                    <View style={styles.row}>
+                      <Text style={styles.rowLabel}>RSI 과매도 조건 추가 요구</Text>
+                      <Text style={[styles.rowValue, { color: selected.dayLowRequireRsiOversold === 1 ? colors.teal : colors.textDim }]}>
+                        {selected.dayLowRequireRsiOversold === 1 ? 'ON' : 'OFF'}
+                      </Text>
+                    </View>
+                  </>
+                )}
                 {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => {
                   const v = selected[f.key];
                   return (
@@ -377,7 +430,7 @@ export default function StrategyScreen() {
         </View>
         <Text style={styles.sectionDesc}>매수 판단 등급별 매수 비율(투자금 대비 %)입니다.</Text>
 
-        {(['BULLISH', 'PULLBACK', 'TAKE_PROFIT', 'STOP_LOSS'] as const).map(type => {
+        {(['BULLISH', 'PULLBACK', 'DAYLOW', 'TAKE_PROFIT', 'STOP_LOSS'] as const).map(type => {
           const items = byType(type);
           if (items.length === 0) return null;
           return (
@@ -420,18 +473,18 @@ const styles = StyleSheet.create({
   editBtnText:  { fontSize: 12, color: colors.teal, fontWeight: '700' },
   deleteBtn:    { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8, backgroundColor: colors.roseDim, borderWidth: 1, borderColor: colors.rose },
   deleteBtnText:{ fontSize: 12, color: colors.rose, fontWeight: '700' },
-  chipRow:      { flexShrink: 0 },
-  chipRowContent: { gap: 8, paddingHorizontal: 4, paddingBottom: 4 },
+  chipList:     { gap: 6, paddingHorizontal: 4, paddingBottom: 4 },
   chip:         {
-    width: 160, backgroundColor: colors.surface, borderRadius: 14,
-    borderWidth: 1, borderColor: colors.borderDim, padding: 12,
+    backgroundColor: colors.surface, borderRadius: 12,
+    borderWidth: 1, borderColor: colors.borderDim, paddingHorizontal: 10, paddingVertical: 8,
   },
   chipActive:   { borderColor: colors.teal, backgroundColor: colors.tealDim },
-  chipBadge:    { alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 2, marginBottom: 6, borderWidth: 1 },
+  chipTopRow:   { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 },
+  chipBadge:    { borderRadius: 999, paddingHorizontal: 6, paddingVertical: 1, borderWidth: 1 },
   chipBadgePublic: { backgroundColor: 'rgba(251,191,36,0.15)', borderColor: colors.amber },
   chipBadgeMine:   { backgroundColor: colors.surfaceAlt, borderColor: colors.borderDim },
-  chipBadgeText:{ fontSize: 10, fontWeight: '700' },
-  chipTitle:    { fontSize: 13, fontWeight: '700', color: colors.text, marginBottom: 3 },
+  chipBadgeText:{ fontSize: 9, fontWeight: '700' },
+  chipTitle:    { fontSize: 13, fontWeight: '700', color: colors.text, flexShrink: 1 },
   chipSub:      { fontSize: 11, color: colors.textDim },
   card:         {
     backgroundColor: colors.surface, borderRadius: 16,
@@ -487,6 +540,13 @@ const detail = StyleSheet.create({
   footer:     { padding: 16, borderTopWidth: 1, borderTopColor: colors.borderDim },
   applyBtn:   { backgroundColor: colors.teal, borderRadius: 12, paddingVertical: 14, alignItems: 'center' },
   applyText:  { color: '#0a1f1e', fontSize: 15, fontWeight: '700' },
+});
+
+const toggleStyles = StyleSheet.create({
+  pill:     { borderRadius: 10, borderWidth: 1, paddingVertical: 10, alignItems: 'center' },
+  pillOn:   { backgroundColor: colors.tealDim, borderColor: colors.teal },
+  pillOff:  { backgroundColor: colors.surfaceAlt, borderColor: colors.borderDim },
+  pillText: { fontSize: 13, fontWeight: '700' },
 });
 
 const badgeStyles = StyleSheet.create({

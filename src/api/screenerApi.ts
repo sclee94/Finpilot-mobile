@@ -11,4 +11,4 @@ export const getScreenerRecommendations = (params: {
   isLive: boolean;
   limit?: number;
 }) =>
-  apiClient.post<ApiResponse<ScreenerResult>>('/screener/recommend', params);
+  apiClient.post<ApiResponse<ScreenerResult>>('/screener/recommend', params, 180000);

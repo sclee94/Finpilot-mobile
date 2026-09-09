@@ -163,7 +163,7 @@ function SummaryCards({ summaryList, totalCount }: { summaryList: TradeHistory[]
   );
 }
 
-function TradeCard({ item, onPress }: { item: TradeHistory; onPress: () => void }) {
+const TradeCard = React.memo(function TradeCard({ item, onPress }: { item: TradeHistory; onPress: () => void }) {
   const actionColor  = ACTION_COLOR[item.action] ?? colors.textDim;
   const isClose      = item.action === 'SELL' || item.action === 'CLOSE_LONG' || item.action === 'CLOSE_SHORT';
   const pnl          = item.realizedPnl;
@@ -181,8 +181,13 @@ function TradeCard({ item, onPress }: { item: TradeHistory; onPress: () => void 
           <View style={[styles.badge, { backgroundColor: actionColor + '25', borderColor: actionColor }]}>
             <Text style={[styles.badgeText, { color: actionColor }]}>{ACTION_LABEL[item.action]}</Text>
           </View>
+          <View style={[styles.badge, { backgroundColor: (item.mode === 'LIVE' ? colors.amber : colors.blue) + '20', borderColor: item.mode === 'LIVE' ? colors.amber : colors.blue }]}>
+            <Text style={[styles.badgeText, { color: item.mode === 'LIVE' ? colors.amber : colors.blue }]}>
+              {item.mode === 'LIVE' ? '실전' : '모의'}
+            </Text>
+          </View>
           {item.orderStatus && (
-            <View style={[styles.badge, { backgroundColor: statusColor + '20', borderColor: statusColor, marginTop: 4 }]}>
+            <View style={[styles.badge, { backgroundColor: statusColor + '20', borderColor: statusColor }]}>
               <Text style={[styles.badgeText, { color: statusColor }]}>
                 {item.orderStatus === 'SUCCESS' ? '성공' : '실패'}
               </Text>
@@ -196,29 +201,66 @@ function TradeCard({ item, onPress }: { item: TradeHistory; onPress: () => void 
           <Text style={styles.infoLabel}>수량</Text>
           <Text style={styles.infoValue}>{item.shares.toLocaleString()}주</Text>
         </View>
-        <View style={styles.divider} />
-        <View style={styles.infoItem}>
-          <Text style={styles.infoLabel}>진입가</Text>
-          <Text style={styles.infoValue}>
-            {item.entryPrice != null ? `₩${item.entryPrice.toLocaleString()}` : '—'}
-          </Text>
-        </View>
-        <View style={styles.divider} />
-        <View style={styles.infoItem}>
-          <Text style={styles.infoLabel}>모드</Text>
-          <Text style={[styles.infoValue, { color: item.mode === 'LIVE' ? colors.amber : colors.blue }]}>
-            {item.mode === 'LIVE' ? '실전' : '모의'}
-          </Text>
-        </View>
-        {isClose && pnl != null && (
+        {!isClose && (
           <>
             <View style={styles.divider} />
             <View style={styles.infoItem}>
-              <Text style={styles.infoLabel}>실현손익</Text>
-              <Text style={[styles.infoValue, { color: pnlColor }]}>
-                {pnl >= 0 ? '+' : ''}₩{pnl.toLocaleString()}
+              <Text style={styles.infoLabel}>진입가</Text>
+              <Text style={styles.infoValue}>
+                {item.entryPrice != null ? `₩${item.entryPrice.toLocaleString()}` : '—'}
               </Text>
             </View>
+            {item.entryPrice != null && (
+              <>
+                <View style={styles.divider} />
+                <View style={styles.infoItem}>
+                  <Text style={styles.infoLabel}>매수금액</Text>
+                  <Text style={styles.infoValue}>
+                    ₩{(item.entryPrice * item.shares).toLocaleString()}
+                  </Text>
+                </View>
+              </>
+            )}
+          </>
+        )}
+        {isClose && (
+          <>
+            <View style={styles.divider} />
+            <View style={styles.infoItem}>
+              <Text style={styles.infoLabel}>매도가</Text>
+              <Text style={styles.infoValue}>
+                {item.exitPrice != null ? `₩${item.exitPrice.toLocaleString()}` : '—'}
+              </Text>
+            </View>
+            {item.exitPrice != null && (
+              <>
+                <View style={styles.divider} />
+                <View style={styles.infoItem}>
+                  <Text style={styles.infoLabel}>매도금액</Text>
+                  <Text style={styles.infoValue}>
+                    ₩{(item.exitPrice * item.shares).toLocaleString()}
+                  </Text>
+                </View>
+              </>
+            )}
+            {pnl != null && (
+              <>
+                <View style={styles.divider} />
+                <View style={styles.infoItem}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 }}>
+                    <Text style={[styles.infoLabel, { marginBottom: 0 }]}>실현손익</Text>
+                    <View style={[styles.pnlBadge, { backgroundColor: (pnl >= 0 ? colors.teal : colors.rose) + '25' }]}>
+                      <Text style={[styles.pnlBadgeText, { color: pnl >= 0 ? colors.teal : colors.rose }]}>
+                        {pnl >= 0 ? '익절' : '손절'}
+                      </Text>
+                    </View>
+                  </View>
+                  <Text style={[styles.infoValue, { color: pnlColor }]}>
+                    {pnl >= 0 ? '+' : ''}₩{pnl.toLocaleString()}
+                  </Text>
+                </View>
+              </>
+            )}
           </>
         )}
       </View>
@@ -231,7 +273,7 @@ function TradeCard({ item, onPress }: { item: TradeHistory; onPress: () => void 
       </View>
     </TouchableOpacity>
   );
-}
+});
 
 function DetailModal({ item, onClose }: { item: TradeHistory | null; onClose: () => void }) {
   if (!item) return null;
@@ -275,7 +317,11 @@ function DetailModal({ item, onClose }: { item: TradeHistory | null; onClose: ()
           </View>
           {isClose && (
             <View style={detail.section}>
-              <Row label="실현 손익" value={pnl != null ? `${pnl >= 0 ? '+' : ''}₩${pnl.toLocaleString()}` : '—'} color={pnl != null ? pnlColor : undefined} />
+              <Row
+                label={pnl != null ? `실현 손익 (${pnl >= 0 ? '익절' : '손절'})` : '실현 손익'}
+                value={pnl != null ? `${pnl >= 0 ? '+' : ''}₩${pnl.toLocaleString()}` : '—'}
+                color={pnl != null ? pnlColor : undefined}
+              />
               <Row label="보유 봉 수" value={item.barsHeld != null ? `${item.barsHeld}봉` : '—'} />
             </View>
           )}
@@ -307,6 +353,10 @@ export default function TradeHistoryScreen() {
   const [refreshing,  setRefreshing]  = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [selected,    setSelected]    = useState<TradeHistory | null>(null);
+  const renderTradeItem = useCallback(
+    ({ item }: { item: TradeHistory }) => <TradeCard item={item} onPress={() => setSelected(item)} />,
+    []
+  );
   const [modeF,       setModeF]       = useState('전체');
   const [actionF,     setActionF]     = useState('전체');
   const [statusF,     setStatusF]     = useState('전체');
@@ -488,7 +538,7 @@ export default function TradeHistoryScreen() {
         data={list}
         keyExtractor={item => item.id}
         ListHeaderComponent={<SummaryCards summaryList={summaryList} totalCount={totalCount} />}
-        renderItem={({ item }) => <TradeCard item={item} onPress={() => setSelected(item)} />}
+        renderItem={renderTradeItem}
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl
@@ -582,7 +632,7 @@ const styles = StyleSheet.create({
   },
   cardTop:          { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
   cardTopLeft:      { flex: 1 },
-  cardTopRight:     { alignItems: 'flex-end' },
+  cardTopRight:     { flexDirection: 'row', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end', maxWidth: 150 },
   symbol:           { fontSize: 16, fontWeight: '700', color: colors.text },
   symbolCode:       { fontSize: 12, color: colors.textDim, marginTop: 2 },
   badge:            { paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, borderWidth: 1 },
@@ -595,6 +645,8 @@ const styles = StyleSheet.create({
   infoLabel:        { fontSize: 10, color: colors.textDim, marginBottom: 3 },
   infoValue:        { fontSize: 13, fontWeight: '700', color: colors.text },
   divider:          { width: 1, backgroundColor: colors.borderDim },
+  pnlBadge:         { borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
+  pnlBadgeText:     { fontSize: 9, fontWeight: '700' },
   cardBottom:       { flexDirection: 'row', justifyContent: 'space-between' },
   dateText:         { fontSize: 11, color: colors.textDim },
   userText:         { fontSize: 11, color: colors.textDim },

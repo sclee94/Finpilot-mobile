@@ -19,7 +19,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/finpilot-logo.png",
-        "backgroundColor": "#09090b"
+        "backgroundColor": "#EFECE4"
       },
       "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,

@@ -105,6 +105,9 @@ export interface StrategyConfig {
   riskPerTradePct?: number;           // 트레이드당 리스크 상한 % (계좌총액 기준) — 손절 시 이 비율만 잃도록 매수금액을 ATR 기반으로 캡
   gradeCutoffBullish?: number;        // 시장+종목 상대강도 필터 — 불타기 컷오프 (등급이 이보다 나쁘면 차단, 기본 12)
   gradeCutoffPullback?: number;       // 시장+종목 상대강도 필터 — 눌림목 컷오프 (등급이 이보다 나쁘면 차단, 기본 14)
+  enableDayLowBuy?: number;           // 당일 저점 매수 ON/OFF (1=ON, 0/null=OFF) — 기존 불타기/눌림목과 병행 동작
+  dayLowBufferPct?: number;           // 당일 저가 대비 허용 오차 % (0=정확히 같아야 인정)
+  dayLowRequireRsiOversold?: number;  // 당일저점 매수에 RSI 과매도(rsiOversold 기준) 조건 추가 요구 여부 (1=요구)
   createdAt?: string;
 }
 
@@ -112,7 +115,7 @@ export interface StrategyConfig {
 export interface StrategyMenu {
   id: number;
   name: string;       // 예: "불타기 1등급"
-  menuType: 'BULLISH' | 'PULLBACK' | 'TAKE_PROFIT' | 'STOP_LOSS';
+  menuType: 'BULLISH' | 'PULLBACK' | 'DAYLOW' | 'TAKE_PROFIT' | 'STOP_LOSS';
   menuGrade: number;
   buyRatio: number | null; // 매수 비율 % — 매도/제외 등급은 null
   createdAt: string;

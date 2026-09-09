@@ -25,7 +25,7 @@ import { getSymbolName } from '../constants/symbolNames';
 import SymbolPickerModal from '../components/SymbolPickerModal';
 import type { TradingSession, StrategyConfig, ScreenerResult, ScreenerRecommendation } from '../types';
 
-function SessionCard({
+const SessionCard = React.memo(function SessionCard({
   session,
   syncing,
   onToggle,
@@ -150,7 +150,7 @@ function SessionCard({
       </View>
     </View>
   );
-}
+});
 
 function CreateSessionModal({
   visible,
@@ -821,7 +821,7 @@ export default function SessionsScreen() {
         </View>
         {!isAdmin && modeFiltered.length > 0 && (
           <TouchableOpacity
-            style={styles.filterBtn}
+            style={styles.bulkStrategyBtn}
             onPress={() => openBulkStrategyChange(modeTab === 'live' ? 'LIVE' : 'PAPER')}
             activeOpacity={0.7}
           >
@@ -918,6 +918,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.borderDim,
   },
   filterBtnActive: { backgroundColor: colors.tealDim, borderColor: colors.teal },
+  bulkStrategyBtn: {
+    flex: 0, paddingVertical: 8, paddingHorizontal: 14, borderRadius: 10, alignItems: 'center',
+    backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.borderDim,
+  },
   filterText:      { fontSize: 12, color: colors.textDim, fontWeight: '700' },
   filterTextActive:{ color: colors.teal },
   list:            { padding: 12, paddingTop: 0, paddingBottom: 100 },

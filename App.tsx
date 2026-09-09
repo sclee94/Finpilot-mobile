@@ -62,6 +62,12 @@ const splash = StyleSheet.create({
   sub:       { fontSize: 13, color: colors.textDim, marginTop: 8, letterSpacing: 1 },
 });
 
+const homeHeader = StyleSheet.create({
+  container: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  logo:      { width: 32, height: 32 },
+  title:     { fontWeight: '700', fontSize: 17, color: colors.text },
+});
+
 function TabIcon({ name, color }: { name: React.ComponentProps<typeof Feather>['name']; color: string }) {
   return <Feather name={name} size={22} color={color} />;
 }
@@ -91,7 +97,16 @@ function MainTabs() {
         name="Home"
         component={HomeScreen}
         options={{
-          headerTitle: 'FINPILOT',
+          headerTitle: () => (
+            <View style={homeHeader.container}>
+              <Image
+                source={require('./assets/finpilot-logo.png')}
+                style={homeHeader.logo}
+                resizeMode="contain"
+              />
+              <Text style={homeHeader.title}>FINPILOT</Text>
+            </View>
+          ),
           tabBarLabel: '홈',
           tabBarIcon:  ({ color }) => <TabIcon name="home" color={color} />,
         }}
