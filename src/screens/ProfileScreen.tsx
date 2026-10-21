@@ -40,6 +40,8 @@ function EditProfileModal({
   const [pwSaving, setPwSaving] = useState(false);
   const [tradingIntervalMinutes, setTradingIntervalMinutes] = useState(15);
   const [intervalSaving, setIntervalSaving] = useState(false);
+  const [tradingStartHour, setTradingStartHour] = useState<number | null>(null);
+  const [startHourSaving, setStartHourSaving] = useState(false);
 
   React.useEffect(() => {
     if (!visible || !user) return;
@@ -52,6 +54,7 @@ function EditProfileModal({
     setKisPaperAccountNo(user.kisPaperAccountNo ?? '');
     setKisPaperAccountProduct(user.kisPaperAccountProduct ?? '01');
     setTradingIntervalMinutes(user.tradingIntervalMinutes ?? 15);
+    setTradingStartHour(user.tradingStartHour ?? null);
     setNewPassword('');
     setConfirmPassword('');
   }, [visible, user?.userUid]);
@@ -103,6 +106,27 @@ function EditProfileModal({
       Alert.alert('오류', '서버 연결에 실패했습니다.');
     } finally {
       setIntervalSaving(false);
+    }
+  };
+
+  const handleStartHourSave = async (value: number) => {
+    if (startHourSaving) return;
+    const previous = tradingStartHour;
+    setTradingStartHour(value);
+    setStartHourSaving(true);
+    try {
+      const res = await userUpdate({ userUid: user.userUid, tradingStartHour: value });
+      if (res.status < 400) {
+        onSaved({ tradingStartHour: value });
+      } else {
+        setTradingStartHour(previous);
+        Alert.alert('오류', res.message || '저장에 실패했습니다.');
+      }
+    } catch {
+      setTradingStartHour(previous);
+      Alert.alert('오류', '서버 연결에 실패했습니다.');
+    } finally {
+      setStartHourSaving(false);
     }
   };
 
@@ -211,6 +235,24 @@ function EditProfileModal({
               >
                 <Text style={[modal.intervalBtnText, tradingIntervalMinutes === min && modal.intervalBtnTextActive]}>
                   {min}분
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={modal.sectionTitle}>매매 시작 시각</Text>
+          <Text style={modal.helperText}>이 시각부터 신규 매수/추가매수를 시작합니다(손절은 장 시작부터 동작). 미설정 시 10:10. 백테스트에도 동일하게 적용됩니다.</Text>
+          <View style={modal.intervalRow}>
+            {[9, 10, 11, 12].map((hour) => (
+              <TouchableOpacity
+                key={hour}
+                disabled={startHourSaving}
+                onPress={() => handleStartHourSave(hour)}
+                style={[modal.intervalBtn, tradingStartHour === hour && modal.intervalBtnActive]}
+                activeOpacity={0.8}
+              >
+                <Text style={[modal.intervalBtnText, tradingStartHour === hour && modal.intervalBtnTextActive]}>
+                  {hour}시
                 </Text>
               </TouchableOpacity>
             ))}

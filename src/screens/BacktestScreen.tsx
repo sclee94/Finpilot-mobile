@@ -1,17 +1,18 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useRef, useEffect } from 'react';
 import type { ReactNode } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   RefreshControl, ActivityIndicator, Alert, Modal, ScrollView,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolioBacktest, runRandomBacktest } from '../api/backtestApi';
+import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolioBacktest, runRandomBacktest, runRecommendBacktest } from '../api/backtestApi';
+import { getTodayRecommendSymbols } from '../api/symbolApi';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
 import { getSymbolName } from '../constants/symbolNames';
 import SymbolPickerModal from '../components/SymbolPickerModal';
-import type { BacktestResult, BacktestTrade, StrategyConfig } from '../types';
+import type { BacktestResult, BacktestTrade, RecommendSymbol, StrategyConfig } from '../types';
 
 const RESULT_LABELS: Record<string, string> = {
   TP_THRESHOLD:    '즉시 익절',
@@ -20,6 +21,8 @@ const RESULT_LABELS: Record<string, string> = {
   SCORE_SL:        '손절(스코어)',
   RSI_OVERBOUGHT:  '익절(RSI 과매수)',
   EOD_FORCE_CLOSE: '강제청산',
+  GAP_DOWN_OPEN:   '갭하락 시가매도',
+  IMMEDIATE_SL_5MIN: '5분 즉시손절',
 };
 
 function resultLabelOf(result: string): string {
@@ -28,14 +31,76 @@ function resultLabelOf(result: string): string {
 
 function resultColorOf(result: string): string {
   if (result === 'TP_THRESHOLD' || result === 'SCORE_TP' || result === 'RSI_OVERBOUGHT') return colors.teal;
-  if (result === 'SL_THRESHOLD' || result === 'SCORE_SL') return colors.rose;
+  if (result === 'SL_THRESHOLD' || result === 'SCORE_SL' || result === 'GAP_DOWN_OPEN' || result === 'IMMEDIATE_SL_5MIN') return colors.rose;
   return colors.textDim;
 }
 
-// 포트폴리오(세션 목록)/랜덤종목 백테스트 결과는 symbol 컬럼에 "PORTFOLIO(N종목)"/"RANDOM(카테고리,N종목)"
-// 요약 라벨이 저장됨 — 개별 종목이 아니므로 getSymbolName()으로 풀어쓰지 않고 그대로 보여준다.
+// 진입 전략(direction)별 청산 결과 집계 — 상세 상단 "전략별 매매 요약" 카드용.
+// 익절은 즉시익절/스코어익절/RSI과매수익절을 합산, 손절 계열은 종류별로 따로 센다.
+// 강제청산(EOD_FORCE_CLOSE)은 어느 항목에도 안 들어가므로 전체 ≠ 항목 합계일 수 있다.
+const STRATEGY_ROWS = [
+  { direction: 'BULLISH',  label: '불타기' },
+  { direction: 'PULLBACK', label: '눌림목' },
+  { direction: 'DAYLOW',   label: '당일저점매수' },
+] as const;
+
+const EXIT_COLUMNS = [
+  { key: 'tp',      label: '익절',            results: ['TP_THRESHOLD', 'SCORE_TP', 'RSI_OVERBOUGHT'], color: colors.teal },
+  { key: 'sl',      label: '손절',            results: ['SCORE_SL'],          color: colors.rose },
+  { key: 'slNow',   label: '즉시손절',        results: ['SL_THRESHOLD'],      color: colors.rose },
+  { key: 'gapDown', label: '갭하락 시가매도', results: ['GAP_DOWN_OPEN'],     color: colors.rose },
+  { key: 'sl5min',  label: '5분 즉시손절',    results: ['IMMEDIATE_SL_5MIN'], color: colors.rose },
+] as const;
+
+const DEFAULT_BACKTEST_CAPITAL = 10_000_000; // Java DEFAULT_PORTFOLIO_BACKTEST_CAPITAL과 동일
+
+// 두 엔진이 거래 로그 returnPct를 다른 기준으로 남긴다:
+//  - 포트폴리오 엔진(세션/랜덤/추천 — symbol이 "PORTFOLIO(" 등 요약 라벨): 포지션 자체 수익률(투자비중 미반영)
+//  - 단일 엔진(특정 종목): 계좌 대비 기여(포지션 수익률 × 투자비중), equity = 거래 후 계좌 배율
+// 그래서 거래 수익률을 단순 합산하면 포트폴리오 결과에선 실제 수익률과 수 배 차이·부호 반전까지 생긴다
+// (2026-10-21 랜덤 결과로 확인) — 손익(원)을 엔진별로 정확히 구해 시작 자본금으로 나눈다.
+/** 시작 자본금 — 저장값 우선, 없으면 1,000만원 고정인 결과만 추정(세션종목은 당시 KIS 잔고라 알 수 없음 → null) */
+function startCapitalOf(result: BacktestResult): number | null {
+  if (result.initialCapital) return Number(result.initialCapital);
+  return result.symbol.startsWith('PORTFOLIO(') ? null : DEFAULT_BACKTEST_CAPITAL;
+}
+
+/** 거래 1건의 실현 손익(원) — 계산 불가(옛 데이터 등)면 null */
+function tradePnl(t: BacktestTrade, result: BacktestResult, capital: number | null): number | null {
+  const r = Number(t.returnPct) / 100;
+  if (isAggregateResult(result.symbol)) {
+    // 매수 시 현금 = 주식수 × 평균단가, 매도 시 + 주식수 × 평균단가 × (1 + r) → 손익 = 주식수 × 평균단가 × r
+    if (t.shares == null || t.entryPrice == null) return null;
+    return Number(t.shares) * Number(t.entryPrice) * r;
+  }
+  // 단일 엔진: equity_after = equity_before × (1 + r) → 이번 거래 손익 = 자본금 × equity_after × r / (1 + r)
+  if (capital == null || t.equity == null) return null;
+  return capital * Number(t.equity) * r / (1 + r);
+}
+
+function strategyExitStats(trades: BacktestTrade[], result: BacktestResult) {
+  const capital = startCapitalOf(result);
+  return STRATEGY_ROWS.map(row => {
+    const ofDirection = trades.filter(t => t.direction === row.direction);
+    const wins = ofDirection.filter(t => Number(t.returnPct) > 0).length;
+    const pnls = ofDirection.map(t => tradePnl(t, result, capital));
+    const pnl = pnls.some(p => p == null) ? null : pnls.reduce<number>((acc, p) => acc + (p as number), 0);
+    return {
+      ...row,
+      total: ofDirection.length,
+      // 승률 = 수익(>0) 거래 비율, 수익률 = 전략 손익 합계 ÷ 시작 자본금 (세 전략 합 ≈ 전체 수익률)
+      winRate: ofDirection.length > 0 ? (wins / ofDirection.length) * 100 : null,
+      pnl,
+      retPct:  pnl != null && capital ? (pnl / capital) * 100 : null,
+      counts: EXIT_COLUMNS.map(col => ofDirection.filter(t => (col.results as readonly string[]).includes(t.result)).length),
+    };
+  });
+}
+
+// 포트폴리오(세션 목록)/랜덤종목/추천종목 백테스트 결과는 symbol 컬럼에 "PORTFOLIO(N종목)"/"RANDOM(카테고리,N종목)"/
+// "RECOMMEND(N종목)" 요약 라벨이 저장됨 — 개별 종목이 아니므로 getSymbolName()으로 풀어쓰지 않고 그대로 보여준다.
 function isAggregateResult(symbol: string): boolean {
-  return symbol.startsWith('PORTFOLIO(') || symbol.startsWith('RANDOM(');
+  return symbol.startsWith('PORTFOLIO(') || symbol.startsWith('RANDOM(') || symbol.startsWith('RECOMMEND(');
 }
 
 function symbolLabelOf(symbol: string): string {
@@ -212,6 +277,59 @@ function BacktestDetailModal({
               ))}
             </View>
 
+            {/* 전략별 매매 요약 — 진입 전략(불타기/눌림목/당일저점)별 전체 매매 수와 청산 결과 종류별 건수 */}
+            {allTrades.length > 0 && (
+              <View style={detail.stratSection}>
+                <Text style={detail.tradesTitle}>전략별 매매 요약</Text>
+                {strategyExitStats(allTrades, result).map(s => (
+                  <View key={s.direction} style={[detail.stratCard, s.total === 0 && { opacity: 0.45 }]}>
+                    <View style={detail.stratHeader}>
+                      <Text style={detail.stratName}>{s.label}</Text>
+                      <Text style={detail.stratTotal}>전체 {s.total}건</Text>
+                    </View>
+                    <View style={detail.stratCounts}>
+                      <View style={detail.stratCountItem}>
+                        <Text style={detail.stratCountLabel}>승률</Text>
+                        <Text style={[detail.stratCountValue, { color: s.winRate == null ? colors.textDim : colors.teal }]}>
+                          {s.winRate == null ? '-' : `${s.winRate.toFixed(1)}%`}
+                        </Text>
+                      </View>
+                      <View style={detail.stratCountItem}>
+                        <Text style={detail.stratCountLabel}>수익률</Text>
+                        <Text style={[detail.stratCountValue, {
+                          color: s.total === 0 || s.retPct == null ? colors.textDim : s.retPct >= 0 ? colors.teal : colors.rose,
+                        }]}>
+                          {s.total === 0 || s.retPct == null ? '-' : `${s.retPct >= 0 ? '+' : ''}${s.retPct.toFixed(2)}%`}
+                        </Text>
+                      </View>
+                      <View style={detail.stratCountItem}>
+                        <Text style={detail.stratCountLabel}>손익</Text>
+                        <Text style={[detail.stratCountValue, {
+                          color: s.total === 0 || s.pnl == null ? colors.textDim : s.pnl >= 0 ? colors.teal : colors.rose,
+                        }]} numberOfLines={1} adjustsFontSizeToFit>
+                          {s.total === 0 || s.pnl == null ? '-' : `${s.pnl >= 0 ? '+' : ''}${Math.round(s.pnl).toLocaleString()}원`}
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={detail.stratDivider} />
+                    <View style={detail.stratCounts}>
+                      {s.counts.map((n, i) => (
+                        <View key={EXIT_COLUMNS[i].key} style={detail.stratCountItem}>
+                          <Text style={detail.stratCountLabel}>{EXIT_COLUMNS[i].label}</Text>
+                          <Text style={[detail.stratCountValue, { color: n > 0 ? EXIT_COLUMNS[i].color : colors.textDim }]}>{n}건</Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ))}
+                <Text style={detail.stratNote}>
+                  승률 = 수익이 난 거래 비율. 수익률 = 해당 전략 거래 손익 합계 ÷ 시작 자본금
+                  {startCapitalOf(result) != null ? `(${startCapitalOf(result)!.toLocaleString()}원)` : '(이 결과는 시작 자본금 기록이 없어 손익만 표시)'}
+                  으로, 세 전략 수익률을 더하면 전체 수익률과 거의 같습니다. 익절 = 즉시 익절 + 익절(스코어) + 익절(RSI 과매수). 강제청산은 결과별 항목에 포함되지 않습니다.
+                </Text>
+              </View>
+            )}
+
             {/* 종목별 요약 — 종목이 2개 이상 섞인 결과(포트폴리오 백테스트)에서만 표시 */}
             {symbolStats.length > 1 && (
               <View style={detail.symbolSection}>
@@ -341,7 +459,11 @@ export default function BacktestScreen() {
   const [running,         setRunning]         = useState(false);
   const [elapsed,         setElapsed]         = useState(0);
   const [showStrategyPicker, setShowStrategyPicker] = useState(false);
-  const [backtestType,     setBacktestType]     = useState<'SYMBOL' | 'PORTFOLIO' | 'RANDOM'>('SYMBOL');
+  const [backtestType,     setBacktestType]     = useState<'SYMBOL' | 'PORTFOLIO' | 'RANDOM' | 'RECOMMEND'>('SYMBOL');
+  const [recommendApplyForceClose, setRecommendApplyForceClose] = useState(false);
+  // 오늘 추천종목 미리보기 — 추천종목 탭을 처음 고를 때 1회 조회 (null=조회 전/중)
+  const [recommendSymbols, setRecommendSymbols] = useState<RecommendSymbol[] | null | 'error'>(null);
+  const upRecommendSymbols = Array.isArray(recommendSymbols) ? recommendSymbols.filter(r => r.direction !== 'DOWN') : [];
   const [portfolioRunMode, setPortfolioRunMode] = useState<'LIVE' | 'PAPER'>('PAPER');
   const [activeOnly,       setActiveOnly]       = useState(true);
   const [randomCategory,         setRandomCategory]         = useState<'KOSPI200' | 'NASDAQ100'>('KOSPI200');
@@ -495,6 +617,42 @@ export default function BacktestScreen() {
     }
   };
 
+  useEffect(() => {
+    if (backtestType !== 'RECOMMEND' || recommendSymbols !== null) return;
+    getTodayRecommendSymbols()
+      .then(res => setRecommendSymbols(res.status < 400 ? (res.data ?? []) : 'error'))
+      .catch(() => setRecommendSymbols('error'));
+  }, [backtestType, recommendSymbols]);
+
+  const handleRunRecommend = async () => {
+    if (!selectedStrategyId || running) return;
+    const u = await authStorage.get();
+    if (!u?.userUid) return;
+    setRunning(true);
+    setElapsed(0);
+    timerRef.current = setInterval(() => setElapsed(p => p + 1), 1000);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      const res = await runRecommendBacktest({
+        userUid:           u.userUid,
+        strategyConfigId:  selectedStrategyId,
+        applyForceClose:   recommendApplyForceClose,
+      }, controller.signal);
+      if (res.data) {
+        setResults(prev => [res.data, ...prev]);
+      } else {
+        Alert.alert('실패', res.message || '백테스트 실행에 실패했습니다.');
+      }
+    } catch {
+      if (!controller.signal.aborted) Alert.alert('오류', '서버 연결에 실패했습니다.');
+    } finally {
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      abortRef.current = null;
+      setRunning(false);
+    }
+  };
+
   const handleResultPress = async (result: BacktestResult) => {
     const u = await authStorage.get();
     setDetailLoading(true);
@@ -558,9 +716,9 @@ export default function BacktestScreen() {
       <View style={styles.runBox}>
         <Text style={styles.runBoxLabel}>실전투자와 동일한 전략 로직으로 최근 60일치 데이터를 검증합니다</Text>
 
-        {/* 백테스트 방식: 특정 종목 1개 vs 세션 목록 전체(포트폴리오) vs 카테고리 내 랜덤 20종목 */}
+        {/* 백테스트 방식: 특정 종목 1개 vs 세션 목록 전체(포트폴리오) vs 카테고리 내 랜덤 20종목 vs 오늘 추천종목 */}
         <View style={styles.typeTabRow}>
-          {(['SYMBOL', 'PORTFOLIO', 'RANDOM'] as const).map(t => (
+          {(['SYMBOL', 'PORTFOLIO', 'RANDOM', 'RECOMMEND'] as const).map(t => (
             <TouchableOpacity
               key={t}
               style={[styles.typeTab, backtestType === t && styles.typeTabActive]}
@@ -568,7 +726,7 @@ export default function BacktestScreen() {
               activeOpacity={0.7}
             >
               <Text style={[styles.typeTabText, backtestType === t && styles.typeTabTextActive]} numberOfLines={1}>
-                {t === 'SYMBOL' ? '특정 종목' : t === 'PORTFOLIO' ? '세션 종목' : '랜덤 종목'}
+                {t === 'SYMBOL' ? '특정 종목' : t === 'PORTFOLIO' ? '세션 종목' : t === 'RANDOM' ? '랜덤 종목' : '추천 종목'}
               </Text>
             </TouchableOpacity>
           ))}
@@ -619,6 +777,36 @@ export default function BacktestScreen() {
               </View>
             </TouchableOpacity>
           </>
+        ) : backtestType === 'RECOMMEND' ? (
+          <>
+            <Text style={styles.recommendDesc}>
+              오늘 아침 뉴스브리핑 추천종목 중 상승 예상 종목 전체에 한 전략을 일괄 적용해 포트폴리오처럼 동시 시뮬레이션합니다 (시드머니 1,000만원 가정).
+            </Text>
+            <Text style={styles.recommendDesc}>
+              추천종목은 매일 바뀌므로 오늘 하루(장 시작~현재/장 마감)만 매매를 재현합니다. 평균 거래량·등급 등 판단 지표는 이전 데이터로 계산하고, 매수·매도는 오늘 시세로만 진행합니다.
+            </Text>
+            <Text style={styles.recommendDesc}>
+              하락 예상 종목은 실전 추천세션과 동일하게 제외되며, 장 시작 전이나 휴장일에는 실행할 수 없습니다.
+            </Text>
+            <Text style={styles.recommendListText}>
+              {recommendSymbols === null ? '추천 종목 불러오는 중...' :
+               recommendSymbols === 'error' ? '추천 종목을 불러오지 못했습니다.' :
+               upRecommendSymbols.length === 0 ? '오늘 추천된 종목이 없습니다.' :
+               `오늘 추천 ${upRecommendSymbols.length}종목: ` +
+                 upRecommendSymbols.map(r => r.symbolName ?? getSymbolName(r.symbol)).join(', ')}
+            </Text>
+            <TouchableOpacity
+              style={styles.activeOnlyRow}
+              onPress={() => setRecommendApplyForceClose(v => !v)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.activeOnlyText}>15:18 강제청산 {recommendApplyForceClose ? '적용함' : '적용 안 함(장마감 평가)'}</Text>
+              <View style={[styles.switchTrack, recommendApplyForceClose && styles.switchTrackOn]}>
+                <View style={[styles.switchThumb, recommendApplyForceClose && styles.switchThumbOn]} />
+              </View>
+            </TouchableOpacity>
+            {strategyChips}
+          </>
         ) : (
           <>
             <Text style={styles.noStrategyText}>
@@ -657,12 +845,19 @@ export default function BacktestScreen() {
             styles.runBtnFull,
             (backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
              backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
+             backtestType === 'RECOMMEND' ? (!selectedStrategyId || upRecommendSymbols.length === 0 || running) :
              running) && styles.runBtnDisabled,
           ]}
-          onPress={backtestType === 'SYMBOL' ? handleRun : backtestType === 'PORTFOLIO' ? handleRunPortfolio : handleRunRandom}
+          onPress={
+            backtestType === 'SYMBOL' ? handleRun :
+            backtestType === 'PORTFOLIO' ? handleRunPortfolio :
+            backtestType === 'RECOMMEND' ? handleRunRecommend :
+            handleRunRandom
+          }
           disabled={
             backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
             backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
+            backtestType === 'RECOMMEND' ? (!selectedStrategyId || upRecommendSymbols.length === 0 || running) :
             running
           }
           activeOpacity={0.8}
@@ -795,6 +990,8 @@ const styles = StyleSheet.create({
   },
   runBoxLabel:    { fontSize: 12, color: colors.textDim },
   noStrategyText: { fontSize: 13, color: colors.textDim, textAlign: 'center', paddingVertical: 4 },
+  recommendDesc:  { fontSize: 12, color: colors.textDim, lineHeight: 17 },
+  recommendListText: { fontSize: 13, color: colors.teal, lineHeight: 18, paddingVertical: 2 },
   typeTabRow:     { flexDirection: 'row', backgroundColor: colors.bg, borderRadius: 10, padding: 4, gap: 4 },
   typeTab:        { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
   typeTabActive:  { backgroundColor: colors.teal },
@@ -894,6 +1091,20 @@ const detail = StyleSheet.create({
   },
   summaryLabel: { fontSize: 11, color: colors.textDim, marginBottom: 4 },
   summaryValue: { fontSize: 16, fontWeight: '700', color: colors.text },
+  stratSection: { marginHorizontal: 12, marginTop: 4, gap: 8 },
+  stratCard:    {
+    backgroundColor: colors.bg, borderRadius: 12, borderWidth: 1,
+    borderColor: colors.borderDim, paddingHorizontal: 12, paddingVertical: 10, gap: 8,
+  },
+  stratHeader:  { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  stratName:    { fontSize: 14, fontWeight: '700', color: colors.text },
+  stratTotal:   { fontSize: 14, fontWeight: '700', color: colors.text },
+  stratCounts:  { flexDirection: 'row', flexWrap: 'wrap', rowGap: 6 },
+  stratCountItem: { width: '33.33%' },
+  stratDivider: { height: 1, backgroundColor: colors.borderDim },
+  stratCountLabel: { fontSize: 11, color: colors.textDim },
+  stratCountValue: { fontSize: 14, fontWeight: '700', marginTop: 1 },
+  stratNote:    { fontSize: 11, color: colors.textDim, lineHeight: 15 },
   symbolSection:{ marginHorizontal: 12, marginTop: 12 },
   symbolList:   { gap: 6 },
   symbolBox:    {

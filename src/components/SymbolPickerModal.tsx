@@ -17,7 +17,7 @@ export default function SymbolPickerModal({
   onChange,
 }: {
   value: string;
-  onChange: (symbol: string, symbolName: string) => void;
+  onChange: (symbol: string, symbolName: string, category?: string) => void;
 }) {
   const [visible, setVisible]   = useState(false);
   const [category, setCategory] = useState<SymbolCategory>('KOSPI200');
@@ -46,7 +46,7 @@ export default function SymbolPickerModal({
 
   const handleClose = () => { setVisible(false); setSearch(''); };
   const handleSelect = (s: SymbolUniverse) => {
-    onChange(s.symbol, s.symbolName);
+    onChange(s.symbol, s.symbolName, s.category);
     handleClose();
   };
 

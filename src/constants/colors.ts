@@ -21,4 +21,10 @@ export const colors = {
   blueDim:     'rgba(96,165,250,0.15)',
   orange:      '#fb923c',
   orangeDim:   'rgba(251,146,60,0.15)',
+  indigo:      '#818cf8',
+  indigoDim:   'rgba(129,140,248,0.15)',
+  fuchsia:     '#e879f9',
+  fuchsiaDim:  'rgba(232,121,249,0.15)',
+  cyan:        '#22d3ee',
+  cyanDim:     'rgba(34,211,238,0.15)',
 };

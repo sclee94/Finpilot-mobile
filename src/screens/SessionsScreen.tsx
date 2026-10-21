@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   RefreshControl, ActivityIndicator, Alert, Modal,
@@ -18,12 +18,14 @@ import {
   updateSessionStrategyConfigIdBulk,
 } from '../api/tradeApi';
 import { getStrategyConfigList } from '../api/strategyApi';
-import { getScreenerRecommendations } from '../api/screenerApi';
+import { getUser, userUpdate } from '../api/userApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
 import { getSymbolName } from '../constants/symbolNames';
 import SymbolPickerModal from '../components/SymbolPickerModal';
-import type { TradingSession, StrategyConfig, ScreenerResult, ScreenerRecommendation } from '../types';
+import CategoryBadge from '../components/CategoryBadge';
+import type { TradingSession, StrategyConfig, User, RecommendSymbol } from '../types';
+import { getTodayRecommendSymbols } from '../api/symbolApi';
 
 const SessionCard = React.memo(function SessionCard({
   session,
@@ -63,6 +65,7 @@ const SessionCard = React.memo(function SessionCard({
               {session.mode === 'LIVE' ? '실전' : '모의'}
             </Text>
           </View>
+          <CategoryBadge category={session.category} />
         </View>
         <View style={[styles.statusBadge, { backgroundColor: isActive ? colors.emeraldDim : colors.surfaceAlt }]}>
           <Text style={[styles.statusText, { color: isActive ? colors.emerald : colors.textDim }]}>
@@ -159,16 +162,17 @@ function CreateSessionModal({
 }: {
   visible: boolean;
   onClose: () => void;
-  onSubmit: (data: { symbol: string; mode: 'LIVE' | 'PAPER' }) => void;
+  onSubmit: (data: { symbol: string; mode: 'LIVE' | 'PAPER'; category?: string }) => void;
 }) {
-  const [symbol, setSymbol] = useState('');
-  const [mode, setMode]     = useState<'LIVE' | 'PAPER'>('PAPER');
+  const [symbol, setSymbol]     = useState('');
+  const [category, setCategory] = useState<string | undefined>(undefined);
+  const [mode, setMode]         = useState<'LIVE' | 'PAPER'>('PAPER');
 
-  const reset = () => { setSymbol(''); setMode('PAPER'); };
+  const reset = () => { setSymbol(''); setCategory(undefined); setMode('PAPER'); };
 
   const handleSubmit = () => {
     if (!symbol.trim()) { Alert.alert('입력 오류', '종목을 선택해주세요.'); return; }
-    onSubmit({ symbol: symbol.trim(), mode });
+    onSubmit({ symbol: symbol.trim(), mode, category });
     reset();
   };
 
@@ -187,7 +191,7 @@ function CreateSessionModal({
         <ScrollView style={modal.scroll} keyboardShouldPersistTaps="handled">
           <View style={modal.field}>
             <Text style={modal.label}>종목</Text>
-            <SymbolPickerModal value={symbol} onChange={(s) => setSymbol(s)} />
+            <SymbolPickerModal value={symbol} onChange={(s, _name, cat) => { setSymbol(s); setCategory(cat); }} />
           </View>
 
           <View style={modal.field}>
@@ -348,203 +352,219 @@ function StrategyChangeModal({
   );
 }
 
-function ScreenerModal({
+function RecommendSessionModal({
   visible,
-  defaultMode,
   onClose,
-  onAdded,
+  sessions,
 }: {
   visible: boolean;
-  defaultMode: 'LIVE' | 'PAPER';
   onClose: () => void;
-  onAdded: (session: TradingSession) => void;
+  sessions: TradingSession[]; // 세션탭이 이미 불러온 목록 — 추천 종목별 내 세션 상태(실전/모의, 보유중) 표시용
 }) {
-  const [limit, setLimit]     = useState('20');
-  const [loading, setLoading] = useState(false);
-  const [error, setError]     = useState('');
-  const [result, setResult]   = useState<ScreenerResult | null>(null);
-  const [addingSymbol, setAddingSymbol] = useState<string | null>(null);
-  const [addedSymbols, setAddedSymbols] = useState<Set<string>>(new Set());
+  const [strategies, setStrategies] = useState<StrategyConfig[]>([]);
+  const [enableRecommendedLive, setEnableRecommendedLive] = useState(false);
+  const [enableRecommendedPaper, setEnableRecommendedPaper] = useState(false);
+  const [recommendedStrategyConfigId, setRecommendedStrategyConfigId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  // 저장된(서버 기준) 추천세션 토글 상태 — null=아직 조회 전. 편집 중인 토글값과 구분해서 "받기 꺼짐" 안내에 사용
+  const [savedReceiving, setSavedReceiving] = useState<boolean | null>(null);
+  // 오늘의 추천 종목(토글 무관) — null=로딩 중, 'error'=조회 실패, 배열(빈 배열이면 "추천 없음")
+  const [recommendSymbols, setRecommendSymbols] = useState<RecommendSymbol[] | null | 'error'>(null);
+  // 방향 필드가 없는 응답(구버전 서버)은 상승(UP)으로 취급
+  const upRecommendSymbols   = Array.isArray(recommendSymbols) ? recommendSymbols.filter(r => r.direction !== 'DOWN') : [];
+  const downRecommendSymbols = Array.isArray(recommendSymbols) ? recommendSymbols.filter(r => r.direction === 'DOWN') : [];
 
-  const reset = () => {
-    setLimit('20'); setLoading(false); setError(''); setResult(null);
-    setAddingSymbol(null); setAddedSymbols(new Set());
-  };
-  const handleClose = () => { reset(); onClose(); };
-
-  const handleScan = async () => {
-    const u = await authStorage.get();
-    if (!u?.userUid || loading) return;
-    setLoading(true);
-    setError('');
-    setResult(null);
-    try {
-      const strategyRes = await getStrategyConfigList();
-      const strategyConfigId = strategyRes.data?.content?.[0]?.id ?? null;
-      if (!strategyConfigId) { setError('적용 가능한 전략 설정을 찾을 수 없습니다.'); return; }
-
-      const n = Math.max(5, Math.min(100, parseInt(limit, 10) || 20));
-      const res = await getScreenerRecommendations({
-        userUid: u.userUid,
-        category: 'KOSPI200',
-        strategyConfigId,
-        isLive: defaultMode === 'LIVE',
-        limit: n,
-      });
-      if (res.data) {
-        setResult(res.data);
-        setAddedSymbols(new Set());
-      } else {
-        setError(res.message || '추천 조회에 실패했습니다.');
+  useEffect(() => {
+    if (!visible) return;
+    setRecommendSymbols(null);
+    getTodayRecommendSymbols()
+      .then((res) => setRecommendSymbols(res.status < 400 ? (res.data ?? []) : 'error'))
+      .catch(() => setRecommendSymbols('error'));
+    (async () => {
+      const u = await authStorage.get();
+      if (!u?.userUid) return;
+      const [userRes, strategyRes] = await Promise.all([
+        getUser({ userUid: u.userUid }),
+        getStrategyConfigList({ userUid: u.userUid }),
+      ]);
+      if (userRes.data) {
+        setEnableRecommendedLive(userRes.data.enableRecommendedSessionsLive === 1);
+        setEnableRecommendedPaper(userRes.data.enableRecommendedSessionsPaper === 1);
+        setRecommendedStrategyConfigId(userRes.data.recommendedStrategyConfigId ?? null);
+        setSavedReceiving(userRes.data.enableRecommendedSessionsLive === 1 || userRes.data.enableRecommendedSessionsPaper === 1);
       }
-    } catch {
-      setError('서버 연결에 실패했습니다. 스캔 종목 수를 줄여서 다시 시도해보세요.');
-    } finally {
-      setLoading(false);
-    }
-  };
+      setStrategies(strategyRes.data?.content ?? []);
+    })();
+  }, [visible]);
 
-  // strategyConfigId는 백엔드가 방향별로 이미 정해서 내려준 값을 그대로 쓴다(평균회귀는
-  // 전용 TP0.6/SL1.5 전략에 반드시 연결돼야 신호가 검증된 그대로 동작함 — 재조회해서
-  // 임의의 기본전략으로 덮어쓰면 안 됨).
-  const handleAdd = async (rec: ScreenerRecommendation) => {
+  const handleSave = async () => {
     const u = await authStorage.get();
-    if (!u?.userUid || addingSymbol) return;
-    const key = `${rec.symbol}:${rec.direction}`;
-    setAddingSymbol(key);
+    if (!u?.userUid || saving) return;
+    setSaving(true);
     try {
-      const res = await insertTradingSession({
+      const payload: Partial<User> = {
         userUid: u.userUid,
-        symbol: rec.symbol,
-        mode: defaultMode,
-        strategyConfigId: rec.strategyConfigId,
-      });
-      if (res.data) {
-        setAddedSymbols(prev => new Set(prev).add(key));
-        onAdded(res.data);
+        enableRecommendedSessionsLive: enableRecommendedLive ? 1 : 0,
+        enableRecommendedSessionsPaper: enableRecommendedPaper ? 1 : 0,
+        ...(recommendedStrategyConfigId != null ? { recommendedStrategyConfigId } : {}),
+      };
+      const res = await userUpdate(payload);
+      if (res.status < 400) {
+        Alert.alert('완료', '추천세션 설정이 저장되었습니다.');
+        onClose();
       } else {
-        Alert.alert('오류', res.message || '세션 추가에 실패했습니다.');
+        Alert.alert('오류', res.message || '저장에 실패했습니다.');
       }
     } catch {
       Alert.alert('오류', '서버 연결에 실패했습니다.');
     } finally {
-      setAddingSymbol(null);
+      setSaving(false);
     }
   };
 
   return (
-    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={handleClose}>
+    <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
       <View style={modal.container}>
         <View style={modal.handle} />
         <View style={modal.header}>
           <View style={{ flex: 1 }}>
-            <Text style={modal.title}>종목 추천받기</Text>
+            <Text style={modal.title}>추천세션 받기</Text>
             <Text style={{ fontSize: 12, color: colors.textDim, marginTop: 4 }}>
-              코스피200 · {defaultMode === 'LIVE' ? '실전' : '모의'} 기준 스캔 (읽기전용, 자동매매 아님)
+              매일 아침 뉴스브리핑 추천 종목으로 자동 세션이 생성됩니다
             </Text>
           </View>
-          <TouchableOpacity onPress={handleClose} style={modal.closeBtn}>
+          <TouchableOpacity onPress={onClose} style={modal.closeBtn}>
             <Text style={modal.closeText}>✕</Text>
           </TouchableOpacity>
         </View>
 
         <ScrollView style={modal.scroll} keyboardShouldPersistTaps="handled">
-          <View style={modal.field}>
-            <Text style={modal.label}>스캔 종목 수 (시가총액 상위 순, 5~100)</Text>
-            <TextInput
-              style={modal.input}
-              value={limit}
-              onChangeText={setLimit}
-              keyboardType="number-pad"
-              placeholder="20"
-              placeholderTextColor={colors.textDim}
-            />
+          <Text style={[modal.hint, { marginBottom: 16 }]}>이미 같은 종목으로 직접 만든 세션이 있으면 그 세션을 그대로 씁니다.</Text>
+
+          {/* 오늘의 추천 종목 — recommend_symbol 기준이라 추천세션 토글과 무관하게 항상 보인다.
+              같은 종목의 내 세션이 있으면(추천으로 생성됐든 직접 만들었든) 모드/보유 상태를 옆에 표시 */}
+          <View style={recommend.todayBox}>
+            <Text style={recommend.todayTitle}>
+              오늘의 추천 종목 <Text style={{ color: colors.textDim, fontSize: 12 }}>(상승 예상)</Text>
+              {upRecommendSymbols.length > 0 && (
+                <Text style={{ color: colors.teal, fontSize: 12 }}>  {upRecommendSymbols.length}개</Text>
+              )}
+            </Text>
+            {recommendSymbols === null ? (
+              <ActivityIndicator color={colors.teal} style={{ alignSelf: 'flex-start' }} />
+            ) : recommendSymbols === 'error' ? (
+              <Text style={[modal.hint, { color: colors.rose }]}>추천 종목을 불러오지 못했습니다.</Text>
+            ) : upRecommendSymbols.length === 0 ? (
+              <Text style={modal.hint}>오늘 추천된 종목이 없습니다.</Text>
+            ) : (
+              <>
+                {upRecommendSymbols.map((r) => (
+                  <View key={r.symbol} style={recommend.todayRow}>
+                    <Text style={recommend.todayName} numberOfLines={1}>{r.symbolName ?? getSymbolName(r.symbol)}</Text>
+                    <Text style={recommend.todayCode}>{r.symbol}</Text>
+                    <CategoryBadge category={r.category} />
+                    {sessions.filter(s => s.symbol === r.symbol).map(s => (
+                      <Text key={s.id} style={[recommend.todayCode, { color: s.mode === 'LIVE' ? colors.rose : colors.sky }]}>
+                        {s.mode === 'LIVE' ? '실전' : '모의'}{s.currentPosition === 'LONG' ? ' 보유중' : ''}
+                      </Text>
+                    ))}
+                  </View>
+                ))}
+                {savedReceiving === false && (
+                  <Text style={modal.hint}>추천세션 받기가 꺼져 있어 이 종목들로 자동매매 세션은 만들어지지 않습니다.</Text>
+                )}
+              </>
+            )}
           </View>
 
-          <TouchableOpacity style={modal.submitBtn} onPress={handleScan} disabled={loading} activeOpacity={0.8}>
-            {loading ? <ActivityIndicator color={colors.bg} /> : <Text style={modal.submitText}>스캔하기 (몇 분 걸릴 수 있어요)</Text>}
-          </TouchableOpacity>
-
-          {error !== '' && <Text style={[modal.hint, { color: colors.rose }]}>{error}</Text>}
-
-          {result && (
-            <View style={{ marginTop: 8 }}>
-              <Text style={modal.hint}>
-                {result.scannedCount}종목 스캔 · {result.recommendations.length}건 추천
-                {result.skippedNoDataCount > 0 ? ` · ${result.skippedNoDataCount}건 데이터 부족 제외` : ''}
+          {/* 하락 예상 종목 — 추천세션은 만들지 않고, 오늘 하루 모든 세션에서 신규매수·추가매수를 막는다.
+              보유 중이면 매도는 기존 익절/손절 규칙 그대로(강제 매도 아님). */}
+          {downRecommendSymbols.length > 0 && (
+            <View style={[recommend.todayBox, { borderColor: colors.rose }]}>
+              <Text style={recommend.todayTitle}>
+                하락 예상 종목
+                <Text style={{ color: colors.rose, fontSize: 12 }}>  {downRecommendSymbols.length}개</Text>
               </Text>
-              {result.recommendations.length === 0 ? (
-                <Text style={[modal.hint, { marginTop: 16 }]}>지금 조건을 만족하는 종목이 없습니다.</Text>
-              ) : (
-                [...result.recommendations]
-                  .sort((a, b) => Number(b.validated) - Number(a.validated))  // 검증된 평균회귀를 위로
-                  .map(rec => {
-                  const key = `${rec.symbol}:${rec.direction}`;
-                  const added = addedSymbols.has(key);
-                  const dirLabel = rec.direction === 'BULLISH' ? '불타기' : rec.direction === 'PULLBACK' ? '눌림목' : '평균회귀';
-                  const dirStyle = rec.direction === 'BULLISH' ? screener.dirBullish
-                    : rec.direction === 'PULLBACK' ? screener.dirPullback : screener.dirMeanrevert;
-                  const dirColor = rec.direction === 'BULLISH' ? colors.teal
-                    : rec.direction === 'PULLBACK' ? colors.blue : colors.amber;
-                  return (
-                    <View key={key} style={screener.row}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <View style={[screener.dirBadge, dirStyle]}>
-                            <Text style={[screener.dirText, { color: dirColor }]}>{dirLabel}</Text>
-                          </View>
-                          <Text style={[screener.validatedTag, { color: rec.validated ? colors.amber : colors.textDim }]}>
-                            {rec.validated ? '검증됨' : '참고용'}
-                          </Text>
-                          <Text style={screener.name} numberOfLines={1}>{rec.symbolName ?? rec.symbol}</Text>
-                        </View>
-                        <Text style={screener.detail} numberOfLines={1}>
-                          {rec.symbol} · {rec.currentPrice.toLocaleString()}원
-                          {rec.marketGrade != null ? ` · 상대강도 ${rec.marketGrade}등급` : ''}
-                        </Text>
-                      </View>
-                      <TouchableOpacity
-                        style={[screener.addBtn, (added || rec.strategyConfigId == null) && screener.addBtnDone]}
-                        onPress={() => handleAdd(rec)}
-                        disabled={added || addingSymbol === key || rec.strategyConfigId == null}
-                        activeOpacity={0.75}
-                      >
-                        {addingSymbol === key
-                          ? <ActivityIndicator color={colors.bg} size="small" />
-                          : <Text style={[screener.addBtnText, (added || rec.strategyConfigId == null) && screener.addBtnTextDone]}>
-                              {added ? '추가됨' : '추가'}
-                            </Text>}
-                      </TouchableOpacity>
-                    </View>
-                  );
-                })
-              )}
+              <Text style={[modal.hint, { marginBottom: 8 }]}>오늘은 이 종목들의 신규 매수와 추가 매수를 모든 세션에서 하지 않습니다. 보유 중인 종목의 매도는 평소 규칙대로 진행됩니다.</Text>
+              {downRecommendSymbols.map((r) => (
+                <View key={r.symbol} style={recommend.todayRow}>
+                  <Text style={recommend.todayName} numberOfLines={1}>{r.symbolName ?? getSymbolName(r.symbol)}</Text>
+                  <Text style={recommend.todayCode}>{r.symbol}</Text>
+                  <CategoryBadge category={r.category} />
+                  <Text style={[recommend.todayCode, { color: colors.rose }]}>매수 차단</Text>
+                  {sessions.filter(s => s.symbol === r.symbol).map(s => (
+                    <Text key={s.id} style={[recommend.todayCode, { color: s.mode === 'LIVE' ? colors.rose : colors.sky }]}>
+                      {s.mode === 'LIVE' ? '실전' : '모의'}{s.currentPosition === 'LONG' ? ' 보유중' : ''}
+                    </Text>
+                  ))}
+                </View>
+              ))}
             </View>
           )}
+
+          <TouchableOpacity
+            onPress={() => setEnableRecommendedLive(v => !v)}
+            style={[recommend.togglePill, enableRecommendedLive ? recommend.togglePillOn : recommend.togglePillOff]}
+            activeOpacity={0.7}
+          >
+            <Text style={[recommend.togglePillText, { color: enableRecommendedLive ? colors.teal : colors.textDim }]}>
+              실전투자에 적용 {enableRecommendedLive ? 'ON' : 'OFF'}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setEnableRecommendedPaper(v => !v)}
+            style={[recommend.togglePill, enableRecommendedPaper ? recommend.togglePillOn : recommend.togglePillOff, { marginTop: 8 }]}
+            activeOpacity={0.7}
+          >
+            <Text style={[recommend.togglePillText, { color: enableRecommendedPaper ? colors.teal : colors.textDim }]}>
+              모의투자에 적용 {enableRecommendedPaper ? 'ON' : 'OFF'}
+            </Text>
+          </TouchableOpacity>
+
+          <Text style={[modal.label, { marginTop: 16 }]}>추천세션에 쓸 전략</Text>
+          <View style={recommend.chipRow}>
+            {strategies.map((s) => (
+              <TouchableOpacity
+                key={s.id}
+                onPress={() => setRecommendedStrategyConfigId(s.id!)}
+                style={[recommend.chip, recommendedStrategyConfigId === s.id && recommend.chipActive]}
+                activeOpacity={0.8}
+              >
+                <Text style={[recommend.chipText, recommendedStrategyConfigId === s.id && recommend.chipTextActive]} numberOfLines={1}>
+                  {s.name || `전략 #${s.id}`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+            {strategies.length === 0 && <Text style={modal.hint}>전략 목록을 불러오는 중...</Text>}
+          </View>
+          {(enableRecommendedLive || enableRecommendedPaper) && recommendedStrategyConfigId == null && (
+            <Text style={[modal.hint, { color: colors.amber, marginTop: 6 }]}>전략을 지정하지 않으면 추천세션이 생성되지 않습니다.</Text>
+          )}
+
+          <TouchableOpacity style={[modal.submitBtn, { marginTop: 20 }]} onPress={handleSave} disabled={saving} activeOpacity={0.8}>
+            {saving ? <ActivityIndicator color={colors.bg} /> : <Text style={modal.submitText}>추천세션 설정 저장</Text>}
+          </TouchableOpacity>
         </ScrollView>
       </View>
     </Modal>
   );
 }
 
-const screener = StyleSheet.create({
-  row: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    borderWidth: 1, borderColor: colors.borderDim, borderRadius: 12,
-    backgroundColor: colors.bg, padding: 12, marginBottom: 8, gap: 10,
-  },
-  dirBadge:       { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
-  dirBullish:     { backgroundColor: colors.tealDim },
-  dirPullback:    { backgroundColor: colors.blueDim },
-  dirMeanrevert:  { backgroundColor: colors.amberDim },
-  dirText:        { fontSize: 11, fontWeight: '700' },
-  validatedTag:   { fontSize: 10, fontWeight: '700' },
-  name:           { fontSize: 14, fontWeight: '700', color: colors.text, flexShrink: 1 },
-  detail:         { fontSize: 12, color: colors.textDim, marginTop: 4 },
-  addBtn:         { backgroundColor: colors.teal, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 9, minWidth: 64, alignItems: 'center' },
-  addBtnDone:     { backgroundColor: colors.surfaceAlt },
-  addBtnText:     { color: colors.bg, fontSize: 13, fontWeight: '700' },
-  addBtnTextDone: { color: colors.textDim },
+const recommend = StyleSheet.create({
+  togglePill:     { paddingVertical: 12, paddingHorizontal: 14, borderRadius: 12, borderWidth: 1, alignItems: 'flex-start' },
+  togglePillOn:   { backgroundColor: colors.tealDim, borderColor: colors.teal },
+  togglePillOff:  { backgroundColor: colors.bg, borderColor: colors.borderDim },
+  togglePillText: { fontSize: 14, fontWeight: '600' },
+  chipRow:        { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  chip:           { paddingVertical: 9, paddingHorizontal: 14, borderRadius: 20, backgroundColor: colors.bg, borderWidth: 1, borderColor: colors.borderDim },
+  chipActive:     { backgroundColor: colors.tealDim, borderColor: colors.teal },
+  chipText:       { fontSize: 13, fontWeight: '600', color: colors.textDim },
+  chipTextActive: { color: colors.teal },
+  todayBox:       { padding: 14, borderRadius: 12, borderWidth: 1, borderColor: colors.borderDim, backgroundColor: colors.surfaceAlt, marginBottom: 16, gap: 8 },
+  todayTitle:     { fontSize: 14, fontWeight: '700', color: colors.text },
+  todayRow:       { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8 },
+  todayName:      { fontSize: 14, fontWeight: '600', color: colors.text, flexShrink: 1 },
+  todayCode:      { fontSize: 12, color: colors.textDim },
 });
 
 const strategyPicker = StyleSheet.create({
@@ -562,7 +582,7 @@ export default function SessionsScreen() {
   const [modeTab,    setModeTab]    = useState<'live' | 'paper'>('live');
   const [filter,     setFilter]     = useState<'all' | 'active' | 'stopped'>('all');
   const [showCreate, setShowCreate] = useState(false);
-  const [showScreener, setShowScreener] = useState(false);
+  const [showRecommend, setShowRecommend] = useState(false);
   const [syncingId,  setSyncingId]  = useState<string | null>(null);
   const [capitalTarget, setCapitalTarget] = useState<TradingSession | null>(null);
   const [capitalSubmitting, setCapitalSubmitting] = useState(false);
@@ -639,6 +659,8 @@ export default function SessionsScreen() {
     try {
       const res = await syncPosition(session.id);
       if (res.data) setSessions(prev => prev.map(s => s.id === session.id ? res.data : s));
+      // KIS 잔고 조회 실패 시 서버는 세션을 바꾸지 않고 실패만 돌려준다 — 조용히 넘어가지 않도록 알림
+      else Alert.alert('오류', `${res.message || '실잔고 동기화에 실패했습니다.'}\n보유 수량은 변경되지 않았습니다.`);
     } catch { Alert.alert('오류', '실잔고 동기화에 실패했습니다.'); }
     finally { setSyncingId(null); }
   };
@@ -744,7 +766,7 @@ export default function SessionsScreen() {
     }
   };
 
-  const handleCreate = async (data: { symbol: string; mode: 'LIVE' | 'PAPER' }) => {
+  const handleCreate = async (data: { symbol: string; mode: 'LIVE' | 'PAPER'; category?: string }) => {
     const u = await authStorage.get();
     if (!u?.userUid) return;
     try {
@@ -756,6 +778,7 @@ export default function SessionsScreen() {
         symbol: data.symbol,
         mode: data.mode,
         strategyConfigId,
+        category: data.category,
       });
       if (res.data) {
         setSessions(prev => [res.data, ...prev]);
@@ -857,9 +880,9 @@ export default function SessionsScreen() {
         }
       />
 
-      {/* FAB - 종목 추천받기 (읽기전용 스캔, 자동매매와 분리) / 세션 생성 */}
+      {/* FAB - 추천세션 받기(외부 뉴스브리핑 연동 토글/전략 설정) / 세션 생성 */}
       {!isAdmin && (
-        <TouchableOpacity style={styles.fabSecondary} onPress={() => setShowScreener(true)} activeOpacity={0.85}>
+        <TouchableOpacity style={styles.fabSecondary} onPress={() => setShowRecommend(true)} activeOpacity={0.85}>
           <Text style={styles.fabSecondaryText}>추천</Text>
         </TouchableOpacity>
       )}
@@ -873,11 +896,10 @@ export default function SessionsScreen() {
         onSubmit={handleCreate}
       />
 
-      <ScreenerModal
-        visible={showScreener}
-        defaultMode={modeTab === 'live' ? 'LIVE' : 'PAPER'}
-        onClose={() => setShowScreener(false)}
-        onAdded={(session) => setSessions(prev => [session, ...prev])}
+      <RecommendSessionModal
+        visible={showRecommend}
+        onClose={() => setShowRecommend(false)}
+        sessions={sessions}
       />
 
       <AdjustCapitalModal

@@ -15,6 +15,7 @@ import SessionsScreen     from './src/screens/SessionsScreen';
 import ProfileScreen      from './src/screens/ProfileScreen';
 import StrategyScreen     from './src/screens/StrategyScreen';
 import BacktestScreen     from './src/screens/BacktestScreen';
+import BriefingDetailScreen from './src/screens/BriefingDetailScreen';
 
 import { authStorage } from './src/utils/auth';
 import { colors }      from './src/constants/colors';
@@ -219,6 +220,20 @@ export default function App() {
         >
           <Stack.Screen name="Login" component={LoginScreen} />
           <Stack.Screen name="Main"  component={MainTabs}   />
+          {/* 홈 화면 하단 브리핑 게시판에서 항목 탭 시 진입 (탭바 없이 뒤로가기 헤더만) */}
+          <Stack.Screen
+            name="BriefingDetail"
+            component={BriefingDetailScreen}
+            options={{
+              headerShown:         true,
+              title:               '브리핑',
+              headerStyle:         { backgroundColor: colors.surface },
+              headerTintColor:     colors.text,
+              headerTitleStyle:    { fontWeight: '700', fontSize: 17 },
+              headerShadowVisible: false,
+              headerBackTitle:     '홈',
+            }}
+          />
         </Stack.Navigator>
       </NavigationContainer>
     </SafeAreaProvider>

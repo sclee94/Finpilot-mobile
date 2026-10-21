@@ -35,3 +35,11 @@ export const runRandomBacktest = (params: {
   applyForceClose: boolean;
 }, signal?: AbortSignal) =>
   apiClient.post<ApiResponse<BacktestResult>>('/finpilot/backtest/random/run', params, undefined, signal);
+
+/** 추천 종목 백테스트 실행 — 오늘 브리핑 추천종목(상승 예상)에 단일 전략 일괄적용, 오늘 하루만 시뮬레이션 */
+export const runRecommendBacktest = (params: {
+  userUid: string;
+  strategyConfigId: number;
+  applyForceClose: boolean;
+}, signal?: AbortSignal) =>
+  apiClient.post<ApiResponse<BacktestResult>>('/finpilot/backtest/recommend/run', params, undefined, signal);

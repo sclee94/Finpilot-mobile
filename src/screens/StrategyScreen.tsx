@@ -21,12 +21,12 @@ type NumField = keyof Pick<StrategyConfig,
   'scoreTakeProfitThreshold' | 'scoreStopLossThreshold' |
   'volBaselineCv' | 'volMultMin' | 'volMultMax' | 'stopLossCooldownMinutes' |
   'adxPeriod' | 'adxThreshold' | 'pullbackTrendMaDays' | 'riskPerTradePct' |
-  'gradeCutoffBullish' | 'gradeCutoffPullback' | 'dayLowBufferPct'>;
+  'gradeCutoffBullish' | 'gradeCutoffPullback' | 'dayLowBufferPct' | 'gapDownExitPct'>;
 
 // 4단계 파이프라인: 1차 필터(후보 자격 자체를 거름) → 2차 필터(스코어링 전 추세강도 게이트)
 // → 매수·매도 전략 1단계(즉시 판단) → 매수·매도 전략 2단계(패턴/RSI 정밀 스코어링)
 // → 당일 저점 매수(기존 불타기/눌림목과 완전히 별개로 병행 동작하는 독립 신호, ON/OFF 토글)
-const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계', '당일 저점 매수'] as const;
+const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계', '당일 저점 매수', '5분 즉시손절 안전망', '갭하락 시가 매도'] as const;
 type Stage = typeof STAGE_ORDER[number];
 
 // 각 파라미터가 실제 전략 로직(kospi_strategy.py / api.py)의 매수 판단, 매도 판단,
@@ -59,6 +59,8 @@ const CONFIG_FIELDS: { key: NumField; label: string; format: (v: number) => stri
   { key: 'volBaselineCv', stage: '매수·매도 전략 1단계', label: '변동성 기준값 (ATR%)', format: v => `${v}`, category: 'common' },
   { key: 'volMultMin',    stage: '매수·매도 전략 1단계', label: '변동성 배수 하한',    format: v => `${v}배`, category: 'common' },
   { key: 'volMultMax',    stage: '매수·매도 전략 1단계', label: '변동성 배수 상한',    format: v => `${v}배`, category: 'common' },
+  // ── 갭하락 시가 매도 (이월 포지션 전용, ON/OFF 토글) ──
+  { key: 'gapDownExitPct', stage: '갭하락 시가 매도', label: '갭하락 매도 기준 (전일 종가 대비 시가)', format: v => `-${v}%`, category: 'sell' },
   // ── 매수·매도 전략 2단계 (정밀 스코어링) ─────────────
   { key: 'rsiOversold',              stage: '매수·매도 전략 2단계', label: '눌림목 과매도 기준 (RSI 14, 매수)', format: v => `${v}`, category: 'buy' },
   { key: 'stopLossVolumeRatio',      stage: '매수·매도 전략 2단계', label: '손절 거래량 확인 (매도)', format: v => `${v}%`, category: 'sell' },
@@ -127,9 +129,11 @@ function StrategyFormModal({
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [form, setForm] = useState<Record<NumField, string>>(() =>
-    Object.fromEntries(CONFIG_FIELDS.map(f => [f.key, String(initial?.[f.key] ?? (f.key === 'dayLowBufferPct' ? 0 : ''))])) as Record<NumField, string>);
+    Object.fromEntries(CONFIG_FIELDS.map(f => [f.key, String(initial?.[f.key] ?? (f.key === 'dayLowBufferPct' ? 0 : f.key === 'gapDownExitPct' ? 1 : ''))])) as Record<NumField, string>);
   const [enableDayLowBuy, setEnableDayLowBuy] = useState(initial?.enableDayLowBuy === 1);
   const [dayLowRequireRsiOversold, setDayLowRequireRsiOversold] = useState(initial?.dayLowRequireRsiOversold === 1);
+  const [enableImmediateStopLoss5Min, setEnableImmediateStopLoss5Min] = useState(initial?.enableImmediateStopLoss5Min === 1);
+  const [enableGapDownExit, setEnableGapDownExit] = useState(initial?.enableGapDownExit === 1);
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -138,6 +142,8 @@ function StrategyFormModal({
     const payload: Record<string, number> = {
       enableDayLowBuy: enableDayLowBuy ? 1 : 0,
       dayLowRequireRsiOversold: dayLowRequireRsiOversold ? 1 : 0,
+      enableImmediateStopLoss5Min: enableImmediateStopLoss5Min ? 1 : 0,
+      enableGapDownExit: enableGapDownExit ? 1 : 0,
     };
     for (const f of CONFIG_FIELDS) {
       const n = parseFloat(form[f.key]);
@@ -219,6 +225,42 @@ function StrategyFormModal({
                   >
                     <Text style={[toggleStyles.pillText, { color: dayLowRequireRsiOversold ? colors.teal : colors.textDim }]}>
                       RSI 과매도 조건 추가 요구 {dayLowRequireRsiOversold ? 'ON' : 'OFF'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {stage === '5분 즉시손절 안전망' && (
+                <View style={detail.editRow}>
+                  <Text style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>
+                    매매 주기가 15분 등으로 긴 세션도, ON이면 그 사이 5분마다 위 "즉시 손절 기준" 하나만 값싸게
+                    재확인합니다(변동성 배수 미적용, 스코어링손절·익절·RSI 등은 원래 주기대로 평가). 정상 변동폭에서도
+                    조기 손절될 수 있어 실측상 성과가 나빠지는 경우가 있었습니다 — 기본 OFF, 직접 A/B 테스트해보세요.
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => setEnableImmediateStopLoss5Min(v => !v)}
+                    style={[toggleStyles.pill, enableImmediateStopLoss5Min ? toggleStyles.pillOn : toggleStyles.pillOff]}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[toggleStyles.pillText, { color: enableImmediateStopLoss5Min ? colors.teal : colors.textDim }]}>
+                      5분 즉시손절 안전망 {enableImmediateStopLoss5Min ? 'ON' : 'OFF'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {stage === '갭하락 시가 매도' && (
+                <View style={detail.editRow}>
+                  <Text style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>
+                    전날부터 들고 온 보유 종목의 시가가 전일 종가보다 아래 기준 % 이상 낮게 시작하면 장 시작 직후(09:00:30)
+                    시장가로 전량 매도하고, 이후 3시간 동안 같은 세션은 신규 매수하지 않습니다. 당일 진입한 포지션에는
+                    적용되지 않습니다 — 기본 OFF.
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => setEnableGapDownExit(v => !v)}
+                    style={[toggleStyles.pill, enableGapDownExit ? toggleStyles.pillOn : toggleStyles.pillOff]}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[toggleStyles.pillText, { color: enableGapDownExit ? colors.teal : colors.textDim }]}>
+                      갭하락 시가 매도 {enableGapDownExit ? 'ON' : 'OFF'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -404,6 +446,22 @@ export default function StrategyScreen() {
                       </Text>
                     </View>
                   </>
+                )}
+                {stage === '5분 즉시손절 안전망' && (
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>ON/OFF</Text>
+                    <Text style={[styles.rowValue, { color: selected.enableImmediateStopLoss5Min === 1 ? colors.teal : colors.textDim }]}>
+                      {selected.enableImmediateStopLoss5Min === 1 ? 'ON' : 'OFF'}
+                    </Text>
+                  </View>
+                )}
+                {stage === '갭하락 시가 매도' && (
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>ON/OFF</Text>
+                    <Text style={[styles.rowValue, { color: selected.enableGapDownExit === 1 ? colors.teal : colors.textDim }]}>
+                      {selected.enableGapDownExit === 1 ? 'ON' : 'OFF'}
+                    </Text>
+                  </View>
                 )}
                 {CONFIG_FIELDS.filter(f => f.stage === stage).map(f => {
                   const v = selected[f.key];

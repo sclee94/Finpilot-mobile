@@ -18,6 +18,7 @@ export const insertTradingSession = (params: {
   strategyConfigId?: number | null;
   symbol:            string;
   mode:              'LIVE' | 'PAPER';
+  category?:         string;
 }) =>
   apiClient.post<ApiResponse<TradingSession>>('/trade/insertTradingSession', params);
 

@@ -8,6 +8,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { getTradeHistoryList } from '../api/tradeApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
+import CategoryBadge, { categoryLabel } from '../components/CategoryBadge';
 import type { TradeHistory } from '../types';
 
 const ACTION_COLOR: Record<string, string> = {
@@ -132,7 +133,8 @@ const PAGE_SIZE = 15;
 
 function SummaryCards({ summaryList, totalCount }: { summaryList: TradeHistory[]; totalCount: number }) {
   const list = summaryList;
-  const closes = list.filter(t => t.action === 'SELL' || t.action === 'CLOSE_LONG' || t.action === 'CLOSE_SHORT');
+  // 손익/승률 집계는 실제 체결(SUCCESS)만 — 실패 주문은 합산하지 않는다
+  const closes = list.filter(t => t.orderStatus === 'SUCCESS' && (t.action === 'SELL' || t.action === 'CLOSE_LONG' || t.action === 'CLOSE_SHORT'));
   const pnls   = closes.map(t => t.realizedPnl ?? 0);
   const totalPnl   = pnls.reduce((a, b) => a + b, 0);
   const winCount   = pnls.filter(p => p > 0).length;
@@ -186,6 +188,7 @@ const TradeCard = React.memo(function TradeCard({ item, onPress }: { item: Trade
               {item.mode === 'LIVE' ? '실전' : '모의'}
             </Text>
           </View>
+          <CategoryBadge category={item.category} />
           {item.orderStatus && (
             <View style={[styles.badge, { backgroundColor: statusColor + '20', borderColor: statusColor }]}>
               <Text style={[styles.badgeText, { color: statusColor }]}>
@@ -301,6 +304,7 @@ function DetailModal({ item, onClose }: { item: TradeHistory | null; onClose: ()
         <ScrollView style={detail.scroll}>
           <View style={detail.section}>
             <Row label="종목" value={`${item.symbolName ?? item.symbol} (${item.symbol})`} />
+            <Row label="구분" value={categoryLabel(item.category)} />
             <Row label="모드"   value={item.mode === 'LIVE' ? '실전' : '모의'} color={item.mode === 'LIVE' ? colors.amber : colors.blue} />
             <Row label="액션"   value={ACTION_LABEL[item.action] ?? item.action} color={ACTION_COLOR[item.action]} />
             <Row label="수량"   value={`${item.shares.toLocaleString()}주`} />

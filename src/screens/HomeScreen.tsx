@@ -8,6 +8,7 @@ import { getTradingSessionList, getExecuteOnOff, setExecuteOnOff, getBalance } f
 import { authStorage } from '../utils/auth';
 import { assetStorage } from '../utils/assetStorage';
 import { colors } from '../constants/colors';
+import BriefingBoard from '../components/BriefingBoard';
 import type { User, TradingSession } from '../types';
 
 function fmt(v: number | null): string {
@@ -88,6 +89,7 @@ export default function HomeScreen() {
   const [paperOrderableCash, setPaperOrderableCash] = useState<number | null>(null);
   const [loading,    setLoading]    = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [briefingRefreshKey, setBriefingRefreshKey] = useState(0);
 
   const load = async (showLoader = true) => {
     if (showLoader) setLoading(true);
@@ -124,6 +126,7 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
+    setBriefingRefreshKey(k => k + 1);
     const u = await authStorage.get();
     const uid = u?.userUid ?? '';
     const isAdmin   = (u?.permission ?? 0) >= 99;
@@ -251,6 +254,9 @@ export default function HomeScreen() {
 
       {/* 통계 테이블 */}
       <StatsTable live={liveStats} paper={paperStats} />
+
+      {/* 브리핑 게시판 (읽기 전용) */}
+      <BriefingBoard refreshKey={briefingRefreshKey} />
     </ScrollView>
   );
 }

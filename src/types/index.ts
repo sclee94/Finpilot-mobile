@@ -38,6 +38,10 @@ export interface User {
   kisPaperAccessToken?: string;
   kisPaperTokenExpiredAt?: string;
   tradingIntervalMinutes?: number; // 자동매매 판단 주기(분) — 5/10/15/30 중 선택, 기본 15
+  tradingStartHour?: number | null; // 자동매매 신규진입 시작 시각(시) — 9/10/11/12 중 선택, null=10:10
+  enableRecommendedSessionsLive?: number;  // 추천세션(외부 뉴스브리핑 연동) 실전 ON/OFF
+  enableRecommendedSessionsPaper?: number; // 추천세션 모의 ON/OFF
+  recommendedStrategyConfigId?: number;    // 추천세션에 쓸 전략 — 기존 공용 전략 중 지정
 }
 
 /**
@@ -53,6 +57,8 @@ export interface TradingSession {
   mode: 'LIVE' | 'PAPER';
   symbol: string;
   symbolName: string | null;
+  category?: string | null; // "KOSPI200" | "KOSDAQ150" | "NASDAQ100" 등 — 직접입력 세션은 null
+  isRecommended?: number | null; // 1=뉴스브리핑 추천으로 자동 생성된 세션(15:40 미보유 시 자동 삭제)
   active: number;
   currentPosition: 'NONE' | 'LONG';
   sharesHeld: number | null;
@@ -108,6 +114,9 @@ export interface StrategyConfig {
   enableDayLowBuy?: number;           // 당일 저점 매수 ON/OFF (1=ON, 0/null=OFF) — 기존 불타기/눌림목과 병행 동작
   dayLowBufferPct?: number;           // 당일 저가 대비 허용 오차 % (0=정확히 같아야 인정)
   dayLowRequireRsiOversold?: number;  // 당일저점 매수에 RSI 과매도(rsiOversold 기준) 조건 추가 요구 여부 (1=요구)
+  enableImmediateStopLoss5Min?: number; // 5분마다 즉시손절 안전망 ON/OFF (1=ON, 0/null=OFF) — 변동성배수 미적용 순수 손절선만 5분마다 재확인
+  enableGapDownExit?: number; // 갭하락 시가 매도 ON/OFF (1=ON, 0/null=OFF) — 이월 포지션이 시가가 전일 종가 대비 gapDownExitPct% 이상 낮으면 09:00:30 매도
+  gapDownExitPct?: number;    // 갭하락 매도 기준 % (기본 1.0)
   createdAt?: string;
 }
 
@@ -147,6 +156,7 @@ export interface BacktestResult {
   userName?: string;
   strategyConfigId: number | null;
   symbol: string;
+  initialCapital?: number | null; // 시작 자본금(원) — 2026-10-21 이전 결과는 null
   periodStart: string;
   periodEnd: string;
   periodDays: number;
@@ -165,12 +175,21 @@ export interface BacktestResult {
 export interface SymbolUniverse {
   symbol:         string;
   symbolName:     string;
-  category:       'KOSPI200' | 'NASDAQ100' | 'INDEX';
+  category:       'KOSPI200' | 'KOSDAQ150' | 'NASDAQ100';
   lastPrice:      number | null;
   marketCap:      number | null;
   priceUpdatedAt: string | null;
 }
 
+/** 외부 뉴스브리핑이 보낸 오늘의 추천 종목 (recommend_symbol) — 추천세션 토글과 무관하게 조회 가능 */
+export interface RecommendSymbol {
+  symbol:        string;
+  symbolName:    string | null;  // symbol_universe 미등록 종목이면 null
+  category:      string | null;
+  direction:     'UP' | 'DOWN';  // UP=상승 예상(추천세션 생성) / DOWN=하락 예상(그날 모든 세션 신규매수·추가매수 차단, 매도는 기존 규칙)
+  recommendDate: string;
+  createdAt:     string | null;
+}
 export interface TradeHistory {
   id: string;
   tradingSessionId: string;
@@ -179,6 +198,7 @@ export interface TradeHistory {
   mode: 'LIVE' | 'PAPER';
   symbol: string;
   symbolName: string | null;
+  category?: string | null; // "KOSPI200" | "KOSDAQ150" | "NASDAQ100" 등 — 세션에서 복사(비정규화)
   action: 'BUY' | 'SELL' | 'ADD_LONG' | 'SELL_SHORT' | 'CLOSE_LONG' | 'CLOSE_SHORT';
   shares: number;
   orderStatus: 'SUCCESS' | 'FAILED';
