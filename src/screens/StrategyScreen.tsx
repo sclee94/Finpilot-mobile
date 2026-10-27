@@ -11,6 +11,8 @@ import {
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
 import type { StrategyConfig, StrategyMenu } from '../types';
+import { strategyEffectWarnings } from '../utils/strategyCheck';
+import type { StrategyCheckInput } from '../utils/strategyCheck';
 
 // ─── Field definitions ─────────────────────────────────────────────────────
 
@@ -21,12 +23,12 @@ type NumField = keyof Pick<StrategyConfig,
   'scoreTakeProfitThreshold' | 'scoreStopLossThreshold' |
   'volBaselineCv' | 'volMultMin' | 'volMultMax' | 'stopLossCooldownMinutes' |
   'adxPeriod' | 'adxThreshold' | 'pullbackTrendMaDays' | 'riskPerTradePct' |
-  'gradeCutoffBullish' | 'gradeCutoffPullback' | 'dayLowBufferPct' | 'gapDownExitPct'>;
+  'gradeCutoffBullish' | 'gradeCutoffPullback' | 'dayLowBufferPct' | 'gapDownExitPct' | 'limitEntryPct'>;
 
 // 4단계 파이프라인: 1차 필터(후보 자격 자체를 거름) → 2차 필터(스코어링 전 추세강도 게이트)
 // → 매수·매도 전략 1단계(즉시 판단) → 매수·매도 전략 2단계(패턴/RSI 정밀 스코어링)
 // → 당일 저점 매수(기존 불타기/눌림목과 완전히 별개로 병행 동작하는 독립 신호, ON/OFF 토글)
-const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계', '당일 저점 매수', '5분 즉시손절 안전망', '갭하락 시가 매도'] as const;
+const STAGE_ORDER = ['1차 필터', '2차 필터', '매수·매도 전략 1단계', '매수·매도 전략 2단계', '당일 저점 매수', '5분 즉시손절 안전망', '갭하락 시가 매도', '지정가 진입'] as const;
 type Stage = typeof STAGE_ORDER[number];
 
 // 각 파라미터가 실제 전략 로직(kospi_strategy.py / api.py)의 매수 판단, 매도 판단,
@@ -61,6 +63,8 @@ const CONFIG_FIELDS: { key: NumField; label: string; format: (v: number) => stri
   { key: 'volMultMax',    stage: '매수·매도 전략 1단계', label: '변동성 배수 상한',    format: v => `${v}배`, category: 'common' },
   // ── 갭하락 시가 매도 (이월 포지션 전용, ON/OFF 토글) ──
   { key: 'gapDownExitPct', stage: '갭하락 시가 매도', label: '갭하락 매도 기준 (전일 종가 대비 시가)', format: v => `-${v}%`, category: 'sell' },
+  // ── 지정가 진입 (신규 매수 주문 방식, ON/OFF 토글) ──
+  { key: 'limitEntryPct', stage: '지정가 진입', label: '지정가 할인폭 (신호 시점 가격 대비)', format: v => `-${v}%`, category: 'buy' },
   // ── 매수·매도 전략 2단계 (정밀 스코어링) ─────────────
   { key: 'rsiOversold',              stage: '매수·매도 전략 2단계', label: '눌림목 과매도 기준 (RSI 14, 매수)', format: v => `${v}`, category: 'buy' },
   { key: 'stopLossVolumeRatio',      stage: '매수·매도 전략 2단계', label: '손절 거래량 확인 (매도)', format: v => `${v}%`, category: 'sell' },
@@ -80,6 +84,30 @@ function CategoryBadge({ category }: { category: FieldCategory }) {
     </View>
   );
 }
+
+/** 설정 점검 — 실제로 작동하지 않거나 모순되는 값을 안내(값은 바꾸지 않음). 규칙: utils/strategyCheck.ts */
+function StrategyCheckPanel({ input }: { input: StrategyCheckInput }) {
+  const items = strategyEffectWarnings(input);
+  if (items.length === 0) return null;
+  return (
+    <View style={checkStyles.box}>
+      <Text style={checkStyles.title}>설정 점검 — 실제로 작동하지 않거나 모순되는 값</Text>
+      {items.map(w => (
+        <Text key={w.text} style={[checkStyles.item, w.level === 'warn' && { color: colors.rose }]}>
+          {w.level === 'warn' ? '⚠ ' : '• '}{w.text}
+        </Text>
+      ))}
+      <Text style={checkStyles.note}>의도한 설정이라면 그대로 두셔도 됩니다. 값은 자동으로 바뀌지 않습니다.</Text>
+    </View>
+  );
+}
+
+const checkStyles = StyleSheet.create({
+  box:   { backgroundColor: colors.amberDim, borderWidth: 1, borderColor: colors.amber, borderRadius: 12, padding: 12, marginTop: 10, gap: 4 },
+  title: { fontSize: 13, fontWeight: '700', color: colors.amber, marginBottom: 2 },
+  item:  { fontSize: 12, color: colors.text, lineHeight: 17 },
+  note:  { fontSize: 11, color: colors.textDim, marginTop: 2 },
+});
 
 function CategoryLegend() {
   return (
@@ -129,11 +157,12 @@ function StrategyFormModal({
 }) {
   const [name, setName] = useState(initial?.name ?? '');
   const [form, setForm] = useState<Record<NumField, string>>(() =>
-    Object.fromEntries(CONFIG_FIELDS.map(f => [f.key, String(initial?.[f.key] ?? (f.key === 'dayLowBufferPct' ? 0 : f.key === 'gapDownExitPct' ? 1 : ''))])) as Record<NumField, string>);
+    Object.fromEntries(CONFIG_FIELDS.map(f => [f.key, String(initial?.[f.key] ?? (f.key === 'dayLowBufferPct' ? 0 : f.key === 'gapDownExitPct' ? 1 : f.key === 'limitEntryPct' ? 0.5 : ''))])) as Record<NumField, string>);
   const [enableDayLowBuy, setEnableDayLowBuy] = useState(initial?.enableDayLowBuy === 1);
   const [dayLowRequireRsiOversold, setDayLowRequireRsiOversold] = useState(initial?.dayLowRequireRsiOversold === 1);
   const [enableImmediateStopLoss5Min, setEnableImmediateStopLoss5Min] = useState(initial?.enableImmediateStopLoss5Min === 1);
   const [enableGapDownExit, setEnableGapDownExit] = useState(initial?.enableGapDownExit === 1);
+  const [enableLimitEntry, setEnableLimitEntry] = useState(initial?.enableLimitEntry === 1);
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -144,6 +173,7 @@ function StrategyFormModal({
       dayLowRequireRsiOversold: dayLowRequireRsiOversold ? 1 : 0,
       enableImmediateStopLoss5Min: enableImmediateStopLoss5Min ? 1 : 0,
       enableGapDownExit: enableGapDownExit ? 1 : 0,
+      enableLimitEntry: enableLimitEntry ? 1 : 0,
     };
     for (const f of CONFIG_FIELDS) {
       const n = parseFloat(form[f.key]);
@@ -186,6 +216,7 @@ function StrategyFormModal({
         <ScrollView style={detail.scroll}>
           <View style={{ marginHorizontal: 12, marginTop: 12 }}>
             <CategoryLegend />
+            <StrategyCheckPanel input={form} />
           </View>
           <View style={detail.section}>
             <View style={detail.editRow}>
@@ -261,6 +292,25 @@ function StrategyFormModal({
                   >
                     <Text style={[toggleStyles.pillText, { color: enableGapDownExit ? colors.teal : colors.textDim }]}>
                       갭하락 시가 매도 {enableGapDownExit ? 'ON' : 'OFF'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+              {stage === '지정가 진입' && (
+                <View style={detail.editRow}>
+                  <Text style={{ fontSize: 11, color: colors.textDim, marginBottom: 8 }}>
+                    ON이면 신규 매수 신호가 났을 때 시장가 대신 신호 시점 가격보다 아래 할인폭만큼 낮은 가격(호가 단위 내림)에
+                    지정가 주문을 걸어둡니다. 장중에 그 가격까지 내려오면 체결되고, 15:00까지 체결되지 않으면 자동 취소합니다.
+                    일부만 체결되면 나머지는 취소하고 체결된 수량만 보유합니다. 실전·모의·백테스트 모두 같은 규칙이며,
+                    추가매수와 15:00 이후 신규 매수는 기존대로 시장가입니다 — 기본 OFF.
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => setEnableLimitEntry(v => !v)}
+                    style={[toggleStyles.pill, enableLimitEntry ? toggleStyles.pillOn : toggleStyles.pillOff]}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={[toggleStyles.pillText, { color: enableLimitEntry ? colors.teal : colors.textDim }]}>
+                      지정가 진입 {enableLimitEntry ? 'ON' : 'OFF'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -428,6 +478,7 @@ export default function StrategyScreen() {
         {selected ? (
           <>
             <CategoryLegend />
+            <StrategyCheckPanel input={selected} />
             {STAGE_ORDER.map(stage => (
               <View key={stage} style={styles.card}>
                 <Text style={styles.cardHeading}>{stage}</Text>
@@ -460,6 +511,14 @@ export default function StrategyScreen() {
                     <Text style={styles.rowLabel}>ON/OFF</Text>
                     <Text style={[styles.rowValue, { color: selected.enableGapDownExit === 1 ? colors.teal : colors.textDim }]}>
                       {selected.enableGapDownExit === 1 ? 'ON' : 'OFF'}
+                    </Text>
+                  </View>
+                )}
+                {stage === '지정가 진입' && (
+                  <View style={styles.row}>
+                    <Text style={styles.rowLabel}>ON/OFF</Text>
+                    <Text style={[styles.rowValue, { color: selected.enableLimitEntry === 1 ? colors.teal : colors.textDim }]}>
+                      {selected.enableLimitEntry === 1 ? 'ON' : 'OFF'}
                     </Text>
                   </View>
                 )}

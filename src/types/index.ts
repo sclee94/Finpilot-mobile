@@ -61,6 +61,9 @@ export interface TradingSession {
   isRecommended?: number | null; // 1=뉴스브리핑 추천으로 자동 생성된 세션(15:40 미보유 시 자동 삭제)
   active: number;
   currentPosition: 'NONE' | 'LONG';
+  pendingOrderNo?: string | null;    // 지정가 진입 체결 대기 중인 KIS 주문번호(있으면 대기 중, 포지션은 아직 NONE)
+  pendingOrderPrice?: number | null; // 대기 중인 지정가
+  pendingOrderQty?: number | null;   // 대기 중인 주문 수량
   sharesHeld: number | null;
   avgEntryPrice: number | null;
   currentEquity: number | null;
@@ -117,6 +120,8 @@ export interface StrategyConfig {
   enableImmediateStopLoss5Min?: number; // 5분마다 즉시손절 안전망 ON/OFF (1=ON, 0/null=OFF) — 변동성배수 미적용 순수 손절선만 5분마다 재확인
   enableGapDownExit?: number; // 갭하락 시가 매도 ON/OFF (1=ON, 0/null=OFF) — 이월 포지션이 시가가 전일 종가 대비 gapDownExitPct% 이상 낮으면 09:00:30 매도
   gapDownExitPct?: number;    // 갭하락 매도 기준 % (기본 1.0)
+  enableLimitEntry?: number;  // 지정가 진입 ON/OFF (1=ON, 0/null=OFF) — 신규 매수를 신호가×(1-limitEntryPct%) 지정가로, 15:00 미체결 취소
+  limitEntryPct?: number;     // 지정가 진입 할인폭 % (기본 0.5)
   createdAt?: string;
 }
 
@@ -187,6 +192,8 @@ export interface RecommendSymbol {
   symbolName:    string | null;  // symbol_universe 미등록 종목이면 null
   category:      string | null;
   direction:     'UP' | 'DOWN';  // UP=상승 예상(추천세션 생성) / DOWN=하락 예상(그날 모든 세션 신규매수·추가매수 차단, 매도는 기존 규칙)
+  strength?:     'WEAK' | 'MEDIUM' | 'STRONG' | 'VERY_STRONG' | null;  // 예상 강도(약/중/강/매우강) — 상승이면 추천세션 매수조건 0/25/50/75% 완화, null=약
+  score?:        number | null;  // 브리핑 점수(상승: 약·중=4, 강·매우강=5) — 기록용
   recommendDate: string;
   createdAt:     string | null;
 }

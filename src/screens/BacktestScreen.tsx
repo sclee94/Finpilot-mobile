@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolioBacktest, runRandomBacktest, runRecommendBacktest } from '../api/backtestApi';
-import { getTodayRecommendSymbols } from '../api/symbolApi';
+import { getTodayRecommendSymbols, recommendStrengthInfo } from '../api/symbolApi';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
@@ -383,7 +383,8 @@ function BacktestDetailModal({
                     </Text>
                   </TouchableOpacity>
                 </View>
-                {trades.flatMap(t => renderTradeCards(t, symbolStats.length > 1))}
+                {/* 여러 종목 대상 백테스트(세션/랜덤/추천)는 거래 종목이 1개뿐이어도 종목명 표시 — 제목이 요약 라벨이라 */}
+                {trades.flatMap(t => renderTradeCards(t, symbolStats.length > 1 || isAggregateResult(result.symbol)))}
               </View>
             )}
           </ScrollView>
@@ -750,7 +751,7 @@ export default function BacktestScreen() {
         ) : backtestType === 'PORTFOLIO' ? (
           <>
             <Text style={styles.noStrategyText}>
-              보유 세션 종목 전체를 실전/모의투자와 동일하게(Top2 필터, 세션별 전략, KIS 실잔고 시드머니) 동시 시뮬레이션합니다
+              보유 세션 종목 전체를 실전/모의투자와 동일하게(Top2 필터, 세션별 전략, KIS 실잔고 시드머니) 동시 시뮬레이션합니다. 추천세션은 하루짜리라 제외됩니다(추천 종목 백테스트로 확인)
             </Text>
             <View style={styles.modeRow}>
               {(['LIVE', 'PAPER'] as const).map(m => (
@@ -788,12 +789,21 @@ export default function BacktestScreen() {
             <Text style={styles.recommendDesc}>
               하락 예상 종목은 실전 추천세션과 동일하게 제외되며, 장 시작 전이나 휴장일에는 실행할 수 없습니다.
             </Text>
+            <Text style={styles.recommendDesc}>
+              실제 추천세션과 똑같이 09:00부터 신규 매수하고(매매 시작 시각 설정과 무관), 매수 마감은 일반 종목과 같습니다(강제청산 적용 시 15:00까지, 미적용 시 장 마감까지).
+            </Text>
+            <Text style={styles.recommendDesc}>
+              브리핑 상승강도에 따라 종목마다 매수 조건을 자동 완화합니다 — 약 0% · 중 25% · 강 50% · 매우강 75% (거래량·ADX·눌림목 필터만, 추격 방지·상승 패턴 확인·매도는 그대로).
+            </Text>
             <Text style={styles.recommendListText}>
               {recommendSymbols === null ? '추천 종목 불러오는 중...' :
                recommendSymbols === 'error' ? '추천 종목을 불러오지 못했습니다.' :
                upRecommendSymbols.length === 0 ? '오늘 추천된 종목이 없습니다.' :
                `오늘 추천 ${upRecommendSymbols.length}종목: ` +
-                 upRecommendSymbols.map(r => r.symbolName ?? getSymbolName(r.symbol)).join(', ')}
+                 upRecommendSymbols.map(r => {
+                   const info = recommendStrengthInfo(r.strength);
+                   return `${r.symbolName ?? getSymbolName(r.symbol)}(${info.label}${info.relaxPct > 0 ? ` ${info.relaxPct}%완화` : ''})`;
+                 }).join(', ')}
             </Text>
             <TouchableOpacity
               style={styles.activeOnlyRow}

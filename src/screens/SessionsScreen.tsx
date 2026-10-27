@@ -25,7 +25,7 @@ import { getSymbolName } from '../constants/symbolNames';
 import SymbolPickerModal from '../components/SymbolPickerModal';
 import CategoryBadge from '../components/CategoryBadge';
 import type { TradingSession, StrategyConfig, User, RecommendSymbol } from '../types';
-import { getTodayRecommendSymbols } from '../api/symbolApi';
+import { getTodayRecommendSymbols, recommendStrengthInfo } from '../api/symbolApi';
 
 const SessionCard = React.memo(function SessionCard({
   session,
@@ -50,8 +50,11 @@ const SessionCard = React.memo(function SessionCard({
 }) {
   const isActive = session.active === 1;
   const forceCloseOn = session.isForceCloseEnabled !== 0;
-  const posColor = session.currentPosition === 'LONG' ? colors.teal : colors.textDim;
-  const posLabel = session.currentPosition === 'LONG' ? '롱' : 'NONE';
+  // 지정가 진입 주문이 체결 대기 중이면(포지션은 아직 NONE) 따로 표시 — 15:00까지 미체결이면 자동 취소
+  const pendingLimit = session.currentPosition !== 'LONG' && !!session.pendingOrderNo;
+  const posColor = session.currentPosition === 'LONG' ? colors.teal : pendingLimit ? colors.amber : colors.textDim;
+  const posLabel = session.currentPosition === 'LONG' ? '롱'
+    : pendingLimit ? `지정가 대기 ${session.pendingOrderPrice?.toLocaleString() ?? '-'}원×${session.pendingOrderQty ?? '-'}` : 'NONE';
   const returnPct = session.currentEquity != null ? (session.currentEquity - 1) * 100 : null;
 
   return (
@@ -463,6 +466,10 @@ function RecommendSessionModal({
                     <Text style={recommend.todayName} numberOfLines={1}>{r.symbolName ?? getSymbolName(r.symbol)}</Text>
                     <Text style={recommend.todayCode}>{r.symbol}</Text>
                     <CategoryBadge category={r.category} />
+                    <Text style={[recommend.todayCode, { color: colors.amber }]}>
+                      {recommendStrengthInfo(r.strength).label}
+                      {recommendStrengthInfo(r.strength).relaxPct > 0 ? ` · ${recommendStrengthInfo(r.strength).relaxPct}% 완화` : ''}
+                    </Text>
                     {sessions.filter(s => s.symbol === r.symbol).map(s => (
                       <Text key={s.id} style={[recommend.todayCode, { color: s.mode === 'LIVE' ? colors.rose : colors.sky }]}>
                         {s.mode === 'LIVE' ? '실전' : '모의'}{s.currentPosition === 'LONG' ? ' 보유중' : ''}
