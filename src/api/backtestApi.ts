@@ -41,5 +41,7 @@ export const runRecommendBacktest = (params: {
   userUid: string;
   strategyConfigId: number;
   applyForceClose: boolean;
+  startDate: string;   // "YYYY-MM-DD"
+  endDate: string;     // "YYYY-MM-DD"
 }, signal?: AbortSignal) =>
   apiClient.post<ApiResponse<BacktestResult>>('/finpilot/backtest/recommend/run', params, undefined, signal);

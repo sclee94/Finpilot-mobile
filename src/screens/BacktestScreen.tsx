@@ -6,7 +6,8 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getBacktestList, getBacktest, deleteBacktest, runBacktest, runPortfolioBacktest, runRandomBacktest, runRecommendBacktest } from '../api/backtestApi';
-import { getTodayRecommendSymbols, recommendStrengthInfo } from '../api/symbolApi';
+import { getRecommendSymbols, kstToday, recommendStrengthInfo } from '../api/symbolApi';
+import DatePickerModal from '../components/DatePickerModal';
 import { getStrategyConfigList } from '../api/strategyApi';
 import { authStorage } from '../utils/auth';
 import { colors } from '../constants/colors';
@@ -464,6 +465,10 @@ export default function BacktestScreen() {
   const [recommendApplyForceClose, setRecommendApplyForceClose] = useState(false);
   // 오늘 추천종목 미리보기 — 추천종목 탭을 처음 고를 때 1회 조회 (null=조회 전/중)
   const [recommendSymbols, setRecommendSymbols] = useState<RecommendSymbol[] | null | 'error'>(null);
+  // 추천종목 백테스트 기간(KST, 기본 오늘 하루) + 달력 모달(null=닫힘)
+  const [recommendFrom, setRecommendFrom] = useState(kstToday);
+  const [recommendTo, setRecommendTo] = useState(kstToday);
+  const [datePicker, setDatePicker] = useState<'from' | 'to' | null>(null);
   const upRecommendSymbols = Array.isArray(recommendSymbols) ? recommendSymbols.filter(r => r.direction !== 'DOWN') : [];
   const [portfolioRunMode, setPortfolioRunMode] = useState<'LIVE' | 'PAPER'>('PAPER');
   const [activeOnly,       setActiveOnly]       = useState(true);
@@ -619,11 +624,20 @@ export default function BacktestScreen() {
   };
 
   useEffect(() => {
-    if (backtestType !== 'RECOMMEND' || recommendSymbols !== null) return;
-    getTodayRecommendSymbols()
-      .then(res => setRecommendSymbols(res.status < 400 ? (res.data ?? []) : 'error'))
-      .catch(() => setRecommendSymbols('error'));
-  }, [backtestType, recommendSymbols]);
+    if (backtestType !== 'RECOMMEND' || recommendFrom > recommendTo) return;
+    let cancelled = false;
+    setRecommendSymbols(null);
+    getRecommendSymbols(recommendFrom, recommendTo)
+      .then(res => { if (!cancelled) setRecommendSymbols(res.status < 400 ? (res.data ?? []) : 'error'); })
+      .catch(() => { if (!cancelled) setRecommendSymbols('error'); });
+    return () => { cancelled = true; };
+  }, [backtestType, recommendFrom, recommendTo]);
+
+  // 미리보기를 추천일별로 묶음(상승 예상만)
+  const upRecommendByDate = upRecommendSymbols.reduce<Record<string, RecommendSymbol[]>>((acc, r) => {
+    (acc[r.recommendDate] ??= []).push(r);
+    return acc;
+  }, {});
 
   const handleRunRecommend = async () => {
     if (!selectedStrategyId || running) return;
@@ -639,6 +653,8 @@ export default function BacktestScreen() {
         userUid:           u.userUid,
         strategyConfigId:  selectedStrategyId,
         applyForceClose:   recommendApplyForceClose,
+        startDate:         recommendFrom,
+        endDate:           recommendTo,
       }, controller.signal);
       if (res.data) {
         setResults(prev => [res.data, ...prev]);
@@ -713,182 +729,6 @@ export default function BacktestScreen() {
 
   return (
     <View style={styles.container}>
-      {/* 종목/전략 선택 + 실행 */}
-      <View style={styles.runBox}>
-        <Text style={styles.runBoxLabel}>실전투자와 동일한 전략 로직으로 최근 60일치 데이터를 검증합니다</Text>
-
-        {/* 백테스트 방식: 특정 종목 1개 vs 세션 목록 전체(포트폴리오) vs 카테고리 내 랜덤 20종목 vs 오늘 추천종목 */}
-        <View style={styles.typeTabRow}>
-          {(['SYMBOL', 'PORTFOLIO', 'RANDOM', 'RECOMMEND'] as const).map(t => (
-            <TouchableOpacity
-              key={t}
-              style={[styles.typeTab, backtestType === t && styles.typeTabActive]}
-              onPress={() => setBacktestType(t)}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.typeTabText, backtestType === t && styles.typeTabTextActive]} numberOfLines={1}>
-                {t === 'SYMBOL' ? '특정 종목' : t === 'PORTFOLIO' ? '세션 종목' : t === 'RANDOM' ? '랜덤 종목' : '추천 종목'}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        {backtestType === 'SYMBOL' ? (
-          <>
-            <SymbolPickerModal value={runSymbol} onChange={(s) => setRunSymbol(s)} />
-            <TouchableOpacity
-              style={styles.activeOnlyRow}
-              onPress={() => setRunApplyForceClose(v => !v)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.activeOnlyText}>15:18 강제청산 {runApplyForceClose ? '적용함' : '적용 안 함(이월)'}</Text>
-              <View style={[styles.switchTrack, runApplyForceClose && styles.switchTrackOn]}>
-                <View style={[styles.switchThumb, runApplyForceClose && styles.switchThumbOn]} />
-              </View>
-            </TouchableOpacity>
-            {strategyChips}
-          </>
-        ) : backtestType === 'PORTFOLIO' ? (
-          <>
-            <Text style={styles.noStrategyText}>
-              보유 세션 종목 전체를 실전/모의투자와 동일하게(Top2 필터, 세션별 전략, KIS 실잔고 시드머니) 동시 시뮬레이션합니다. 추천세션은 하루짜리라 제외됩니다(추천 종목 백테스트로 확인)
-            </Text>
-            <View style={styles.modeRow}>
-              {(['LIVE', 'PAPER'] as const).map(m => (
-                <TouchableOpacity
-                  key={m}
-                  style={[styles.modeBtn, portfolioRunMode === m && (m === 'LIVE' ? styles.modeBtnLive : styles.modeBtnPaper)]}
-                  onPress={() => setPortfolioRunMode(m)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[styles.modeBtnText, { color: portfolioRunMode === m ? (m === 'LIVE' ? colors.amber : colors.blue) : colors.textDim }]}>
-                    {m === 'LIVE' ? '실전' : '모의'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <TouchableOpacity
-              style={styles.activeOnlyRow}
-              onPress={() => setActiveOnly(v => !v)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.activeOnlyText}>{activeOnly ? '활성(active) 세션만' : '전체 세션'}</Text>
-              <View style={[styles.switchTrack, activeOnly && styles.switchTrackOn]}>
-                <View style={[styles.switchThumb, activeOnly && styles.switchThumbOn]} />
-              </View>
-            </TouchableOpacity>
-          </>
-        ) : backtestType === 'RECOMMEND' ? (
-          <>
-            <Text style={styles.recommendDesc}>
-              오늘 아침 뉴스브리핑 추천종목 중 상승 예상 종목 전체에 한 전략을 일괄 적용해 포트폴리오처럼 동시 시뮬레이션합니다 (시드머니 1,000만원 가정).
-            </Text>
-            <Text style={styles.recommendDesc}>
-              추천종목은 매일 바뀌므로 오늘 하루(장 시작~현재/장 마감)만 매매를 재현합니다. 평균 거래량·등급 등 판단 지표는 이전 데이터로 계산하고, 매수·매도는 오늘 시세로만 진행합니다.
-            </Text>
-            <Text style={styles.recommendDesc}>
-              하락 예상 종목은 실전 추천세션과 동일하게 제외되며, 장 시작 전이나 휴장일에는 실행할 수 없습니다.
-            </Text>
-            <Text style={styles.recommendDesc}>
-              실제 추천세션과 똑같이 09:00부터 신규 매수하고(매매 시작 시각 설정과 무관), 매수 마감은 일반 종목과 같습니다(강제청산 적용 시 15:00까지, 미적용 시 장 마감까지).
-            </Text>
-            <Text style={styles.recommendDesc}>
-              브리핑 상승강도에 따라 종목마다 매수 조건을 자동 완화합니다 — 약 0% · 중 25% · 강 50% · 매우강 75% (거래량·ADX·눌림목 필터만, 추격 방지·상승 패턴 확인·매도는 그대로).
-            </Text>
-            <Text style={styles.recommendListText}>
-              {recommendSymbols === null ? '추천 종목 불러오는 중...' :
-               recommendSymbols === 'error' ? '추천 종목을 불러오지 못했습니다.' :
-               upRecommendSymbols.length === 0 ? '오늘 추천된 종목이 없습니다.' :
-               `오늘 추천 ${upRecommendSymbols.length}종목: ` +
-                 upRecommendSymbols.map(r => {
-                   const info = recommendStrengthInfo(r.strength);
-                   return `${r.symbolName ?? getSymbolName(r.symbol)}(${info.label}${info.relaxPct > 0 ? ` ${info.relaxPct}%완화` : ''})`;
-                 }).join(', ')}
-            </Text>
-            <TouchableOpacity
-              style={styles.activeOnlyRow}
-              onPress={() => setRecommendApplyForceClose(v => !v)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.activeOnlyText}>15:18 강제청산 {recommendApplyForceClose ? '적용함' : '적용 안 함(장마감 평가)'}</Text>
-              <View style={[styles.switchTrack, recommendApplyForceClose && styles.switchTrackOn]}>
-                <View style={[styles.switchThumb, recommendApplyForceClose && styles.switchThumbOn]} />
-              </View>
-            </TouchableOpacity>
-            {strategyChips}
-          </>
-        ) : (
-          <>
-            <Text style={styles.noStrategyText}>
-              선택한 카테고리 안에서 무작위 20종목에 한 전략을 일괄 적용해 포트폴리오처럼 동시 시뮬레이션합니다
-            </Text>
-            <View style={styles.modeRow}>
-              {([{ id: 'KOSPI200', label: '코스피200' }, { id: 'NASDAQ100', label: '나스닥100' }] as const).map(c => (
-                <TouchableOpacity
-                  key={c.id}
-                  style={[styles.modeBtn, randomCategory === c.id && styles.modeBtnLive]}
-                  onPress={() => setRandomCategory(c.id)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[styles.modeBtnText, { color: randomCategory === c.id ? colors.amber : colors.textDim }]}>
-                    {c.label}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            <TouchableOpacity
-              style={styles.activeOnlyRow}
-              onPress={() => setRandomApplyForceClose(v => !v)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.activeOnlyText}>15:18 강제청산 {randomApplyForceClose ? '적용함' : '적용 안 함(이월)'}</Text>
-              <View style={[styles.switchTrack, randomApplyForceClose && styles.switchTrackOn]}>
-                <View style={[styles.switchThumb, randomApplyForceClose && styles.switchThumbOn]} />
-              </View>
-            </TouchableOpacity>
-            {strategyChips}
-          </>
-        )}
-
-        <TouchableOpacity
-          style={[
-            styles.runBtnFull,
-            (backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
-             backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
-             backtestType === 'RECOMMEND' ? (!selectedStrategyId || upRecommendSymbols.length === 0 || running) :
-             running) && styles.runBtnDisabled,
-          ]}
-          onPress={
-            backtestType === 'SYMBOL' ? handleRun :
-            backtestType === 'PORTFOLIO' ? handleRunPortfolio :
-            backtestType === 'RECOMMEND' ? handleRunRecommend :
-            handleRunRandom
-          }
-          disabled={
-            backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
-            backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
-            backtestType === 'RECOMMEND' ? (!selectedStrategyId || upRecommendSymbols.length === 0 || running) :
-            running
-          }
-          activeOpacity={0.8}
-        >
-          {running ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <ActivityIndicator color={colors.bg} size="small" />
-              <Text style={styles.runBtnText}>실행 중 ({formatElapsed(elapsed)})</Text>
-            </View>
-          ) : (
-            <Text style={styles.runBtnText}>실행하기</Text>
-          )}
-        </TouchableOpacity>
-
-        {running && (
-          <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel} activeOpacity={0.8}>
-            <Text style={styles.cancelBtnText}>취소</Text>
-          </TouchableOpacity>
-        )}
-      </View>
-
       <FlatList
         data={results}
         keyExtractor={item => String(item.id)}
@@ -952,6 +792,215 @@ export default function BacktestScreen() {
             </TouchableOpacity>
           );
         }}
+        // 입력 영역(종목/전략 선택 + 실행)은 리스트 헤더로 둬서 결과 목록과 함께 스크롤 — 고정 영역으로 두면 추천종목 모드처럼
+        // 내용이 길 때 화면을 넘어 아무것도 스크롤되지 않았음
+        ListHeaderComponent={
+          <View style={styles.runBox}>
+            <Text style={styles.runBoxLabel}>실전투자와 동일한 전략 로직으로 최근 60일치 데이터를 검증합니다</Text>
+
+            {/* 백테스트 방식: 특정 종목 1개 vs 세션 목록 전체(포트폴리오) vs 카테고리 내 랜덤 20종목 vs 오늘 추천종목 */}
+            <View style={styles.typeTabRow}>
+              {(['SYMBOL', 'PORTFOLIO', 'RANDOM', 'RECOMMEND'] as const).map(t => (
+                <TouchableOpacity
+                  key={t}
+                  style={[styles.typeTab, backtestType === t && styles.typeTabActive]}
+                  onPress={() => setBacktestType(t)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.typeTabText, backtestType === t && styles.typeTabTextActive]} numberOfLines={1}>
+                    {t === 'SYMBOL' ? '특정 종목' : t === 'PORTFOLIO' ? '세션 종목' : t === 'RANDOM' ? '랜덤 종목' : '추천 종목'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {backtestType === 'SYMBOL' ? (
+              <>
+                <SymbolPickerModal value={runSymbol} onChange={(s) => setRunSymbol(s)} />
+                <TouchableOpacity
+                  style={styles.activeOnlyRow}
+                  onPress={() => setRunApplyForceClose(v => !v)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.activeOnlyText}>15:18 강제청산 {runApplyForceClose ? '적용함' : '적용 안 함(이월)'}</Text>
+                  <View style={[styles.switchTrack, runApplyForceClose && styles.switchTrackOn]}>
+                    <View style={[styles.switchThumb, runApplyForceClose && styles.switchThumbOn]} />
+                  </View>
+                </TouchableOpacity>
+                {strategyChips}
+              </>
+            ) : backtestType === 'PORTFOLIO' ? (
+              <>
+                <Text style={styles.noStrategyText}>
+                  보유 세션 종목 전체를 실전/모의투자와 동일하게(Top2 필터, 세션별 전략, KIS 실잔고 시드머니) 동시 시뮬레이션합니다. 추천세션은 하루짜리라 제외됩니다(추천 종목 백테스트로 확인)
+                </Text>
+                <View style={styles.modeRow}>
+                  {(['LIVE', 'PAPER'] as const).map(m => (
+                    <TouchableOpacity
+                      key={m}
+                      style={[styles.modeBtn, portfolioRunMode === m && (m === 'LIVE' ? styles.modeBtnLive : styles.modeBtnPaper)]}
+                      onPress={() => setPortfolioRunMode(m)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.modeBtnText, { color: portfolioRunMode === m ? (m === 'LIVE' ? colors.amber : colors.blue) : colors.textDim }]}>
+                        {m === 'LIVE' ? '실전' : '모의'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <TouchableOpacity
+                  style={styles.activeOnlyRow}
+                  onPress={() => setActiveOnly(v => !v)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.activeOnlyText}>{activeOnly ? '활성(active) 세션만' : '전체 세션'}</Text>
+                  <View style={[styles.switchTrack, activeOnly && styles.switchTrackOn]}>
+                    <View style={[styles.switchThumb, activeOnly && styles.switchThumbOn]} />
+                  </View>
+                </TouchableOpacity>
+              </>
+            ) : backtestType === 'RECOMMEND' ? (
+              <>
+                <Text style={styles.recommendDesc}>
+                  선택한 기간의 아침 뉴스브리핑 추천종목 중 상승 예상 종목에 한 전략을 일괄 적용해 포트폴리오처럼 동시 시뮬레이션합니다 (시드머니 1,000만원 가정).
+                </Text>
+                <Text style={styles.recommendDesc}>
+                  날짜마다 그날 추천된 종목만 신규 매수하고, 장 마감 때 보유 중인 종목은 실제 추천세션처럼 다음 날로 이어서 익절·손절 규칙대로 운용합니다. 한 번 매도한 종목은 그날 다시 사지 않습니다.
+                </Text>
+                <Text style={styles.recommendDesc}>
+                  하락 예상 종목은 실전 추천세션과 동일하게 제외됩니다. 추천 기록은 2026-10-28부터 날짜별로 쌓이며, 그 이전은 아침 브리핑에서 복원된 날만 조회됩니다. 휴장일은 건너뜁니다.
+                </Text>
+                <Text style={styles.recommendDesc}>
+                  실제 추천세션과 똑같이 09:00부터 신규 매수하고(매매 시작 시각 설정과 무관), 매수 마감은 일반 종목과 같습니다(강제청산 적용 시 15:00까지, 미적용 시 장 마감까지).
+                </Text>
+                <Text style={styles.recommendDesc}>
+                  브리핑 상승강도에 따라 종목마다 매수 조건을 자동 완화합니다 — 약 0% · 중 25% · 강 50% · 매우강 75% (거래량·ADX·눌림목 필터만, 추격 방지·상승 패턴 확인·매도는 그대로).
+                </Text>
+                <View style={styles.dateRow}>
+                  <TouchableOpacity style={styles.dateBox} onPress={() => setDatePicker('from')} disabled={running} activeOpacity={0.7}>
+                    <Text style={styles.dateLabel}>시작일</Text>
+                    <Text style={styles.dateValue}>{recommendFrom}</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.dateTilde}>~</Text>
+                  <TouchableOpacity style={styles.dateBox} onPress={() => setDatePicker('to')} disabled={running} activeOpacity={0.7}>
+                    <Text style={styles.dateLabel}>종료일</Text>
+                    <Text style={styles.dateValue}>{recommendTo}</Text>
+                  </TouchableOpacity>
+                </View>
+                {recommendSymbols === null ? (
+                  <Text style={styles.recommendListText}>추천 종목 불러오는 중...</Text>
+                ) : recommendSymbols === 'error' ? (
+                  <Text style={styles.recommendListText}>추천 종목을 불러오지 못했습니다.</Text>
+                ) : upRecommendSymbols.length === 0 ? (
+                  <Text style={styles.recommendListText}>선택한 기간에 추천된 종목이 없습니다.</Text>
+                ) : (
+                  <View>
+                    <Text style={styles.recommendDesc}>
+                      {Object.keys(upRecommendByDate).length}일 · {upRecommendSymbols.length}건
+                    </Text>
+                    {Object.entries(upRecommendByDate).map(([date, list]) => (
+                      <Text key={date} style={styles.recommendListText}>
+                        {date.slice(5)}  {list.map(r => {
+                          const info = recommendStrengthInfo(r.strength);
+                          return `${r.symbolName ?? getSymbolName(r.symbol)}(${info.label}${info.relaxPct > 0 ? ` ${info.relaxPct}%완화` : ''})`;
+                        }).join(', ')}
+                      </Text>
+                    ))}
+                  </View>
+                )}
+                <DatePickerModal
+                  visible={datePicker != null}
+                  title={datePicker === 'from' ? '시작일 선택' : '종료일 선택'}
+                  value={datePicker === 'from' ? recommendFrom : recommendTo}
+                  minDate={datePicker === 'to' ? recommendFrom : undefined}
+                  maxDate={datePicker === 'from' ? recommendTo : kstToday()}
+                  onSelect={d => (datePicker === 'from' ? setRecommendFrom(d) : setRecommendTo(d))}
+                  onClose={() => setDatePicker(null)}
+                />
+                <TouchableOpacity
+                  style={styles.activeOnlyRow}
+                  onPress={() => setRecommendApplyForceClose(v => !v)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.activeOnlyText}>15:18 강제청산 {recommendApplyForceClose ? '적용함' : '적용 안 함(장마감 평가)'}</Text>
+                  <View style={[styles.switchTrack, recommendApplyForceClose && styles.switchTrackOn]}>
+                    <View style={[styles.switchThumb, recommendApplyForceClose && styles.switchThumbOn]} />
+                  </View>
+                </TouchableOpacity>
+                {strategyChips}
+              </>
+            ) : (
+              <>
+                <Text style={styles.noStrategyText}>
+                  선택한 카테고리 안에서 무작위 20종목에 한 전략을 일괄 적용해 포트폴리오처럼 동시 시뮬레이션합니다
+                </Text>
+                <View style={styles.modeRow}>
+                  {([{ id: 'KOSPI200', label: '코스피200' }, { id: 'NASDAQ100', label: '나스닥100' }] as const).map(c => (
+                    <TouchableOpacity
+                      key={c.id}
+                      style={[styles.modeBtn, randomCategory === c.id && styles.modeBtnLive]}
+                      onPress={() => setRandomCategory(c.id)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={[styles.modeBtnText, { color: randomCategory === c.id ? colors.amber : colors.textDim }]}>
+                        {c.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <TouchableOpacity
+                  style={styles.activeOnlyRow}
+                  onPress={() => setRandomApplyForceClose(v => !v)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={styles.activeOnlyText}>15:18 강제청산 {randomApplyForceClose ? '적용함' : '적용 안 함(이월)'}</Text>
+                  <View style={[styles.switchTrack, randomApplyForceClose && styles.switchTrackOn]}>
+                    <View style={[styles.switchThumb, randomApplyForceClose && styles.switchThumbOn]} />
+                  </View>
+                </TouchableOpacity>
+                {strategyChips}
+              </>
+            )}
+
+            <TouchableOpacity
+              style={[
+                styles.runBtnFull,
+                (backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
+                 backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
+                 backtestType === 'RECOMMEND' ? (!selectedStrategyId || upRecommendSymbols.length === 0 || running) :
+                 running) && styles.runBtnDisabled,
+              ]}
+              onPress={
+                backtestType === 'SYMBOL' ? handleRun :
+                backtestType === 'PORTFOLIO' ? handleRunPortfolio :
+                backtestType === 'RECOMMEND' ? handleRunRecommend :
+                handleRunRandom
+              }
+              disabled={
+                backtestType === 'SYMBOL' ? (!runSymbol || !selectedStrategyId || running) :
+                backtestType === 'RANDOM' ? (!selectedStrategyId || running) :
+                backtestType === 'RECOMMEND' ? (!selectedStrategyId || upRecommendSymbols.length === 0 || running) :
+                running
+              }
+              activeOpacity={0.8}
+            >
+              {running ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <ActivityIndicator color={colors.bg} size="small" />
+                  <Text style={styles.runBtnText}>실행 중 ({formatElapsed(elapsed)})</Text>
+                </View>
+              ) : (
+                <Text style={styles.runBtnText}>실행하기</Text>
+              )}
+            </TouchableOpacity>
+
+            {running && (
+              <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel} activeOpacity={0.8}>
+                <Text style={styles.cancelBtnText}>취소</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        }
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(false); }} tintColor={colors.teal} />
@@ -997,11 +1046,17 @@ const styles = StyleSheet.create({
   runBox:         {
     backgroundColor: colors.surface, borderBottomWidth: 1,
     borderBottomColor: colors.borderDim, padding: 14, gap: 10,
+    margin: -12, marginBottom: 12,   // 리스트 헤더라 list 패딩(12)을 상쇄해 예전처럼 화면 폭 전체를 씀
   },
   runBoxLabel:    { fontSize: 12, color: colors.textDim },
   noStrategyText: { fontSize: 13, color: colors.textDim, textAlign: 'center', paddingVertical: 4 },
   recommendDesc:  { fontSize: 12, color: colors.textDim, lineHeight: 17 },
   recommendListText: { fontSize: 13, color: colors.teal, lineHeight: 18, paddingVertical: 2 },
+  dateRow:        { flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: 6 },
+  dateBox:        { flex: 1, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 8 },
+  dateLabel:      { fontSize: 11, color: colors.textDim, marginBottom: 2 },
+  dateValue:      { fontSize: 14, color: colors.text, fontWeight: '600' },
+  dateTilde:      { fontSize: 14, color: colors.textDim },
   typeTabRow:     { flexDirection: 'row', backgroundColor: colors.bg, borderRadius: 10, padding: 4, gap: 4 },
   typeTab:        { flex: 1, paddingVertical: 9, borderRadius: 8, alignItems: 'center' },
   typeTabActive:  { backgroundColor: colors.teal },

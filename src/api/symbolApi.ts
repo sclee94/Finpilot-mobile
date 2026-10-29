@@ -24,6 +24,13 @@ const STRENGTH_INFO: Record<string, { label: string; relaxPct: number }> = {
 export const recommendStrengthInfo = (strength: string | null | undefined) =>
   STRENGTH_INFO[strength ?? 'WEAK'] ?? STRENGTH_INFO.WEAK;
 
+/** 기간(KST, YYYY-MM-DD) 뉴스브리핑 추천 종목 - GET /api/recommend/symbols?from=&to= (날짜순, 추천종목 기간 백테스트 미리보기) */
+export const getRecommendSymbols = (from: string, to: string) =>
+  apiClient.get<ApiResponse<RecommendSymbol[]>>(`/recommend/symbols?from=${from}&to=${to}`);
+
+/** 오늘 날짜(KST) "YYYY-MM-DD" */
+export const kstToday = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+
 /** 오늘(KST) 뉴스브리핑 추천 종목 - GET /api/recommend/symbols (없으면 빈 배열, 토글 여부 무관) */
 export const getTodayRecommendSymbols = () =>
   apiClient.get<ApiResponse<RecommendSymbol[]>>('/recommend/symbols');
